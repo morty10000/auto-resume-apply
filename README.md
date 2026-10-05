@@ -21,7 +21,7 @@
 
 ### 方式一：便携版（推荐，免安装）
 
-到 **Releases** 下载 `全自动投简历-便携版.zip` → 解压到任意目录 → 双击 `start.bat`。
+到 **Releases** 下载便携版压缩包（`auto-resume-apply-<版本>-portable.zip`）→ 解压到任意目录 → 双击 `start.bat`。
 包内自带完整 Python 运行环境，**无需安装任何东西**；只要求系统自带 Microsoft Edge。
 
 > zip 约 200MB（内含完整运行环境），解压后约 550MB。
@@ -83,5 +83,7 @@ Microsoft Edge DevTools Protocol（CDP，自动化经本地调试端口完成，
   并在打包前做「内容级扫描」（连 exe 内嵌的本机路径都会检出）。
 - 仓库保持「仅源码」：`.gitignore` 已排除 `data/`、`runtime/`、`dist/` 与全部开发脚本；
   便携包 zip 作为 **Releases 附件**上传（不要提交进仓库）。
+- GitHub 会清理附件名中的非 ASCII 字符——上传前先把 zip 改名为英文
+  （如 `auto-resume-apply-<版本>-portable.zip`）再上传。
 - 离线自检：`runtime\python.exe scripts\selfcheck\wiring_audit.py`
   （前端↔后端接线）与 `runtime\python.exe scripts\selfcheck\css_contract.py`（样式契约）。
