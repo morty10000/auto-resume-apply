@@ -1,0 +1,11 @@
+# 顶层依赖锁定版本，保证打包分发的可复现性
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+sqlalchemy==2.0.54
+pydantic==2.13.5
+python-multipart==0.0.32
+playwright==1.63.0
+pdfplumber==0.11.10
+python-docx==1.2.0
+pymupdf==1.28.0
+rapidocr-onnxruntime==1.4.4

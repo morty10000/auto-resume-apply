@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>全自动投递简历系统</title>
+<link rel="stylesheet" href="style.css?v=20261005t">
+<!-- 界面风格皮肤（默认「新拟物」即 style.css 本身；以下按需启用） -->
+<link rel="stylesheet" data-theme-css="brutalist" href="themes/brutalist.css?v=20261005t" disabled>
+<link rel="stylesheet" data-theme-css="editorial" href="themes/editorial.css?v=20261005t" disabled>
+<link rel="stylesheet" data-theme-css="bento" href="themes/bento.css?v=20261005t" disabled>
+<link rel="stylesheet" data-theme-css="dark" href="themes/dark.css?v=20261005t" disabled>
+<link rel="stylesheet" data-theme-css="corporate" href="themes/corporate.css?v=20261005t" disabled>
+<script>
+/* 首屏无闪：在任何渲染前启用已保存的界面风格 */
+(function () {
+  try {
+    var t = localStorage.getItem('ui_theme') || 'neumorphism';
+    document.documentElement.setAttribute('data-theme', t);
+    if (t !== 'neumorphism') {
+      var l = document.querySelector('link[data-theme-css="' + t + '"]');
+      if (l) l.disabled = false;
+    }
+  } catch (e) { }
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand"><span class="brand-dot"></span><span>全自动投递简历系统</span></div>
+    <span id="taskStatePill" class="pill pill-idle">空闲</span>
+  </div>
+</header>
+
+<div class="nav-bar">
+<nav class="tabs">
+  <button class="tab active" data-tab="home">主页</button>
+  <button class="tab" data-tab="collect-setup">采集设置</button>
+  <button class="tab" data-tab="match-setup">匹配设置</button>
+  <button class="tab" data-tab="apply-setup">投递设置</button>
+  <button class="tab" data-tab="monitor">运行监控</button>
+  <button class="tab" data-tab="collect">采集记录</button>
+  <button class="tab" data-tab="matchlog">匹配记录</button>
+  <button class="tab" data-tab="results">投递记录</button>
+  <button class="tab" data-tab="resume">简历</button>
+</nav>
+  <div class="theme-picker">
+    <button id="btnTheme" class="btn btn-ghost btn-sm theme-btn" type="button"
+            aria-haspopup="listbox" aria-expanded="false" title="切换界面风格">🎨 风格 · <span id="themeName">新拟物</span></button>
+    <div id="themeMenu" class="theme-menu hidden" role="listbox" aria-label="界面风格切换"></div>
+  </div>
+</div>
+
+<main>
+
+  <!-- ================= 主页 ================= -->
+  <section id="tab-home" class="tab-panel active">
+
+      <div id="resumeBar" class="resume-bar hidden"></div>
+
+      <div class="card">
+        <h2>投递平台</h2>
+        <p class="hint">选择要投递的平台；首次使用点击「去登录」跳转对应官网完成登录（登录态保存在本地，一次登录长期复用）。</p>
+        <div id="platformList" class="platform-grid"></div>
+        <div class="today-stats-head">今日数据 · 采集 / 投递 <span id="todayStatsDate" class="ts-date"></span></div>
+        <div id="todayStats" class="today-stats"></div>
+      </div>
+
+    <div class="card">
+      <h2>配置自动保存</h2>
+      <p class="hint">无需手动保存：表单里的所有设置（平台 / 关键词 / 城市 / 防風控方案等）在修改时自动写入本地文件（data/user_config.json），关闭或重启项目后自动恢复。</p>
+    </div>
+
+    <div class="action-bar">
+      <div id="runFlow" class="run-flow" title="任务运行流程">
+        <div class="flow-step pending" data-step="auth">
+          <span class="fs-dot"></span>
+          <span class="fs-label">登录检查</span>
+          <span class="fs-sub"></span>
+        </div>
+        <span class="flow-arrow"></span>
+        <div class="flow-step pending" data-step="collect">
+          <span class="fs-dot"></span>
+          <span class="fs-label">采集岗位</span>
+          <span class="fs-sub"></span>
+        </div>
+        <span class="flow-arrow"></span>
+        <div class="flow-step pending" data-step="match">
+          <span class="fs-dot"></span>
+          <span class="fs-label">匹配打分</span>
+          <span class="fs-sub"></span>
+        </div>
+        <span class="flow-arrow"></span>
+        <div class="flow-step pending" data-step="apply">
+          <span class="fs-dot"></span>
+          <span class="fs-label">投递简历</span>
+          <span class="fs-sub"></span>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="btnRunCollect" class="btn btn-ghost btn-stage" title="只运行采集阶段：按关键词搜索并收集岗位">🔍 开始采集</button>
+        <button id="btnRunMatch" class="btn btn-ghost btn-stage" title="只运行匹配打分阶段：用简历给已采集岗位打分">🎯 开始匹配</button>
+        <button id="btnRunApply" class="btn btn-ghost btn-stage" title="只运行投递阶段：向匹配通过的岗位发起沟通">📤 开始投递</button>
+        <button id="btnStart" class="btn btn-primary" title="采集 → 匹配 → 投递，一次跑完三个流程">⚡ 一键全流程</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 采集设置页 ================= -->
+  <section id="tab-collect-setup" class="tab-panel">
+
+    <div class="card">
+      <h2>岗位条件</h2>
+      <div class="form-grid">
+        <div class="form-item span2">
+          <label>岗位关键词 <em>*</em></label>
+          <div id="keywordTags" class="tag-input"><input id="keywordInput" placeholder="输入后回车添加，如：Python 后端"></div>
+          <div class="hint">支持一次粘贴多个（逗号 / 换行分隔）；回车逐个添加</div>
+        </div>
+        <div class="form-item span2">
+          <label>搜索方式</label>
+          <div class="seg" id="keywordMode">
+            <button type="button" class="seg-btn" data-value="each">逐个搜索</button>
+            <button type="button" class="seg-btn" data-value="combined">组合搜索</button>
+          </div>
+          <div class="hint" id="keywordModeHint"></div>
+        </div>
+        <div class="form-item span2">
+          <label>城市 <em>*</em></label>
+          <div id="cityPresets" class="preset-row"></div>
+          <div id="cityTags" class="tag-input"><input id="cityInput" placeholder="输入后回车添加，如：上海"></div>
+        </div>
+        <div class="form-item">
+          <label>薪资范围（K/月）</label>
+          <div class="range-row">
+            <input id="salaryMin" type="number" placeholder="下限">
+            <span class="dash">—</span>
+            <input id="salaryMax" type="number" placeholder="上限">
+          </div>
+        </div>
+        <div class="form-item">
+          <label>经验要求（可多选，不选即不限）</label>
+          <div id="experienceChips" class="chip-group"></div>
+        </div>
+        <div class="form-item">
+          <label>学历要求（可多选，不选即不限）</label>
+          <div id="educationChips" class="chip-group"></div>
+        </div>
+        <div class="form-item">
+          <label>HR活跃度（太久不活跃直接过滤）</label>
+          <select id="hrActive">
+            <option value="">不限</option>
+            <option value="3">3 天内活跃</option>
+            <option value="7">7 天内活跃</option>
+            <option value="14">14 天内活跃</option>
+            <option value="30">30 天内活跃</option>
+          </select>
+          <div class="hint">猎聘/智联取接口活跃文案；Boss/51job 优先取头像旁活跃标签（如「今日活跃」「本周搜人才」），取不到时按在线状态；无法判定的岗位不拦截</div>
+        </div>
+        <div class="form-item">
+          <label>抓取页数 / 关键词</label>
+          <input id="maxPages" type="number" min="1" max="50" value="5">
+        </div>
+        <div class="form-item span2">
+          <label>采集数量上限（每个平台单独设置）</label>
+          <div id="maxJobsByPlatform" class="plat-limit-grid"></div>
+          <div class="hint">每个平台各自的上限：该平台采满即停止（未勾选的平台不生效，灰色不可改）</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>搜索节奏（模拟人工操作，防触发风控）</h2>
+      <div class="form-grid">
+        <div class="form-item">
+          <label>关键词间隔（秒）</label>
+          <div class="range-row">
+            <input id="kwDelayMin" type="number" min="1" value="8">
+            <span class="dash">—</span>
+            <input id="kwDelayMax" type="number" min="1" value="20">
+          </div>
+        </div>
+        <div class="form-item">
+          <label>翻页间隔（秒）</label>
+          <div class="range-row">
+            <input id="pageDelayMin" type="number" min="1" value="3">
+            <span class="dash">—</span>
+            <input id="pageDelayMax" type="number" min="1" value="8">
+          </div>
+        </div>
+        <div class="form-item">
+          <label>关键词随机顺序</label>
+          <label class="opt"><input id="shuffleKeywords" type="checkbox" checked> 每次运行打乱搜索顺序</label>
+        </div>
+        <div class="form-item">
+          <label>模拟浏览动作</label>
+          <label class="opt"><input id="humanizeScroll" type="checkbox" checked> 搜索时随机滚动 / 停留</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>防风控方案（按平台差异化）</h2>
+      <p class="hint">一键运行 / 一键全流程时，各平台按各自方案执行（每关键词页数上限 + 翻页节奏 + 投递间隔，优先于上方全局设置）；关键词间隔与搜索方式沿用全局。勾选「正文校验」后：通过基础筛选的岗位会抓取详情页正文，关键词在「标题 / 标签 / 正文」任一处命中即收录（标题、标签未命中但正文命中会自动救回；三处都未命中才丢弃）；正文同时用于简历匹配打分。每平台每轮最多抓 采集上限×2 份、每 8 份自动长休息一次——稳妥优先，宁慢勿险。</p>
+      <div id="paceByPlatform" class="plat-pace-grid"></div>
+      <div class="pace-foot">
+        <button type="button" id="btnPacePreset" class="btn btn-ghost btn-sm">一键填入推荐值</button>
+        <span class="hint">推荐值按各平台风控机制设计：Boss 最保守；51job 单页数据量大、页数最少（3 页/词）。数值越大越安全、速度越慢。</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 匹配设置页 ================= -->
+  <section id="tab-match-setup" class="tab-panel">
+
+    <div class="card">
+      <h2>匹配设置</h2>
+      <p class="hint">采集到的岗位会与简历逐条比对打分，达到阈值的岗位才会进入投递。</p>
+      <div class="form-grid">
+        <div class="form-item span2">
+          <label>匹配分数阈值（0~100，可拖动滑块或直接输入数字）</label>
+          <div class="threshold-row">
+            <input id="threshold" type="range" min="0" max="100" value="60">
+            <input id="thresholdNum" type="number" min="0" max="100" step="1" value="60">
+            <span class="dash">分</span>
+          </div>
+        </div>
+        <div class="form-item span2">
+          <label>标题黑名单（可选；标题命中即淘汰）</label>
+          <div id="blacklistTags" class="tag-input"><input id="blacklistInput" placeholder="输入后回车添加，如：外包、驻场"></div>
+          <div class="hint">支持一次输入 / 粘贴多个：逗号（,，）、顿号（、）、分号（;；）、空格、换行均可分隔；自动去重；点标签上的 × 删除</div>
+        </div>
+      </div>
+      <button id="btnGoResume" class="btn btn-ghost btn-sm">去「简历」页上传 / 更新简历</button>
+    </div>
+
+    <div class="card">
+      <h2>评分说明</h2>
+      <p class="hint">① 技能覆盖 40%：简历技能 ∩ 岗位要求技能 ÷ 岗位要求技能数（权重最高）；</p>
+      <p class="hint">② 职位名称相似 30% ｜ 薪资区间匹配 15% ｜ HR活跃 / 福利 / 企业信息加分 15%；</p>
+      <p class="hint">③ 硬过滤：城市 / 学历 / 经验 / 标题黑名单，命中直接淘汰（不参与分数排名）；</p>
+      <p class="hint">④ 阈值越高投递越精准，越低覆盖面越广；匹配明细可在「匹配记录」页点击行展开。</p>
+    </div>
+  </section>
+
+  <!-- ================= 投递设置页 ================= -->
+  <section id="tab-apply-setup" class="tab-panel">
+
+    <div class="card">
+      <h2>投递设置</h2>
+      <p class="hint">投递时的节奏与话术；间隔随机化可降低触发风控的概率。</p>
+      <div class="form-grid">
+        <div class="form-item span2">
+          <label>每日投递上限（每个平台单独设置）</label>
+          <div id="dailyLimitByPlatform" class="plat-limit-grid"></div>
+          <div class="hint">每个平台独立计数：当天累计投满后停止该平台（每天 0 点重置；未勾选的平台不生效）</div>
+        </div>
+        <div class="form-item">
+          <label>投递间隔（秒）</label>
+          <div class="range-row">
+            <input id="delayMin" type="number" min="1" value="5">
+            <span class="dash">—</span>
+            <input id="delayMax" type="number" min="1" value="12">
+          </div>
+        </div>
+        <div class="form-item span2">
+          <label>补充打招呼语（可选）</label>
+          <textarea id="greeting" rows="3" placeholder="留空则不追加。示例：您好，我关注到贵司的{job_title}岗位，我熟悉{skills}，希望和您进一步沟通，谢谢！"></textarea>
+          <div class="hint">注意：「立即沟通」时平台会自动发送你 Boss 账号里设置的打招呼语（如「到岗快」）；这里填写的模板会作为第二条补充消息发出——填了才发，留空则只发平台招呼。变量：{job_title} {company} {skills}</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 监控页 ================= -->
+  <section id="tab-monitor" class="tab-panel">
+
+    <div id="verifyBanner" class="verify-banner hidden">
+      <span id="verifyText">⚠️ 检测到安全验证（验证码 / 滑块）。请在浏览器窗口中手动完成验证，然后点击右侧按钮继续。</span>
+      <button id="btnResume" class="btn btn-warn">继续运行</button>
+    </div>
+
+    <div class="card monitor-status">
+      <div class="ms-row">
+        <div class="ms-state">
+          <span id="msIcon" class="ms-icon">💤</span>
+          <div>
+            <div id="msTitle" class="ms-title">空闲中</div>
+            <div id="msSub" class="ms-sub">回「主页」点「开始采集 / 开始匹配 / 开始投递 / 一键全流程」即可启动任务</div>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="btnPause" class="btn btn-ghost" disabled>⏸ 暂停</button>
+          <button id="btnStop" class="btn btn-danger-ghost" disabled>⏹ 停止</button>
+        </div>
+      </div>
+      <div class="progress-row">
+        <div class="progress-track"><div id="progressBar" class="progress-fill"></div></div>
+        <span id="progressPercent" class="progress-percent">0%</span>
+      </div>
+      <div id="msStage" class="ms-stage">当前阶段：等待任务启动</div>
+      <div class="ms-live">
+        <div class="ms-live-main">
+          <span id="msLiveDot" class="ms-live-beat"></span>
+          <span id="msLiveDetail" class="ms-live-detail">暂无运行中的任务</span>
+        </div>
+        <div class="ms-live-meta">
+          <span id="msLiveTimer" class="ms-live-timer"></span>
+          <span id="msLiveFresh" class="ms-live-fresh"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats-caption">本次任务数据（实时更新）</div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-num" id="statCollected">0</div><div class="stat-label">📥 采集到岗位</div></div>
+      <div class="stat-card"><div class="stat-num" id="statMatched">0</div><div class="stat-label">🎯 匹配通过</div></div>
+      <div class="stat-card ok"><div class="stat-num" id="statApplied">0</div><div class="stat-label">📨 投递成功</div></div>
+      <div class="stat-card err"><div class="stat-num" id="statFailed">0</div><div class="stat-label">⚠️ 失败</div></div>
+    </div>
+
+    <div class="card">
+      <div class="monitor-head">
+        <h2>运行日志</h2>
+        <div class="btn-row">
+          <button id="btnLogFilter" class="btn btn-ghost btn-sm">只看重要</button>
+          <button id="btnClearLog" class="btn btn-ghost btn-sm">清空</button>
+        </div>
+      </div>
+      <div class="log-hint">✅ 成功　⚠️ 提醒　❌ 失败　其余为普通过程信息</div>
+      <div id="logBox" class="log-box"></div>
+    </div>
+  </section>
+
+  <!-- ================= 结果页 ================= -->
+  <section id="tab-results" class="tab-panel">
+    <div class="card">
+      <div class="monitor-head">
+        <h2>投递记录</h2>
+        <div class="btn-row">
+          <select id="filterStatus" class="select-inline">
+            <option value="">全部状态</option>
+            <option value="applied">已投递</option>
+            <option value="matched">待投递</option>
+            <option value="failed">失败</option>
+          </select>
+          <input id="searchBox" class="input-inline" placeholder="搜索岗位 / 公司">
+          <button id="btnExport" class="btn btn-ghost">导出 CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="jobsTable">
+          <thead>
+            <tr>
+              <th>平台</th><th>岗位</th><th>公司</th><th>薪资</th><th>城市</th>
+              <th>匹配分</th><th>状态</th><th>时间</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="jobsTbody"></tbody>
+        </table>
+        <div id="tableEmpty" class="empty-state">暂无记录，先去「配置」页启动一次任务吧</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 简历页 ================= -->
+  <section id="tab-resume" class="tab-panel">
+    <div class="card">
+      <h2>简历上传</h2>
+      <p class="hint">支持 PDF / Word，上传后自动解析，用于岗位匹配与填表。</p>
+      <div id="dropZone" class="drop-zone">
+        <div class="drop-icon">📄</div>
+        <div>拖拽简历到此处，或 <span class="link">点击选择文件</span></div>
+        <div class="hint">支持 .pdf / .docx，单文件不超过 10MB ｜ 图片版 PDF 自动 OCR 识别</div>
+      </div>
+      <div id="resumeBusy" class="resume-busy hidden">⏳ 正在解析…</div>
+      <input type="file" id="fileInput" accept=".pdf,.docx" hidden>
+      <div id="resumeResult" class="resume-result hidden"></div>
+    </div>
+
+    <div class="card">
+      <h2>简历的用途</h2>
+      <p class="hint">① 「匹配打分」阶段：按简历技能 / 经验 / 学历对采集到的岗位评分，达到阈值的才会进入投递；</p>
+      <p class="hint">② 打招呼语中的 {skills} 等变量取自简历解析结果；</p>
+      <p class="hint">③ 简历文件只保存在本地（data/resumes/），不会上传到第三方。</p>
+    </div>
+  </section>
+
+  <!-- ================= 采集记录页 ================= -->
+  <section id="tab-collect" class="tab-panel">
+    <div class="card">
+      <div class="monitor-head">
+        <h2>采集记录</h2>
+        <div class="btn-row">
+          <span id="collectCount" class="collect-count"></span>
+          <button id="btnRefreshCollect" class="btn btn-ghost btn-sm">刷新</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="collectTable">
+          <thead>
+            <tr>
+              <th>平台</th><th>岗位</th><th>公司</th><th>薪资</th><th>城市</th><th>HR活跃</th><th>状态</th><th>采集时间</th>
+            </tr>
+          </thead>
+          <tbody id="collectTbody"></tbody>
+        </table>
+        <div id="collectEmpty" class="empty-state">还没有采集记录 —— 回「主页」点「🔍 开始采集」跑一次真实采集吧</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 匹配记录页 ================= -->
+  <section id="tab-matchlog" class="tab-panel">
+    <div class="card">
+      <div class="monitor-head">
+        <h2>匹配记录</h2>
+        <div class="btn-row">
+          <span id="matchCount" class="collect-count"></span>
+          <select id="matchFilter" class="select-inline">
+            <option value="all">全部</option>
+            <option value="matched">仅匹配通过</option>
+            <option value="rejected">仅未通过</option>
+          </select>
+          <button id="btnRefreshMatch" class="btn btn-ghost btn-sm">刷新</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="matchTable">
+          <thead>
+            <tr>
+              <th>分数</th><th>岗位</th><th>公司</th><th>薪资</th><th>城市</th>
+              <th>技能命中</th><th>状态</th><th>匹配时间</th>
+            </tr>
+          </thead>
+          <tbody id="matchTbody"></tbody>
+        </table>
+        <div id="matchEmpty" class="empty-state">还没有匹配记录 —— 回「主页」点「🎯 开始匹配」，用简历给采集到的岗位打分（点击行可展开评分明细）</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+<span id="realBadge" class="hidden">真实模式：采集 / 匹配 / 投递均已对接真实平台 ｜ 投递会真实发出沟通，请留意节奏与每日上限</span>
+  <span>全自动投递简历系统 · 本地运行 · 数据不出本机</span>
+</footer>
+
+<div id="toastBox" class="toast-box"></div>
+
+<script src="app.js?v=20261005t"></script>
+</body>
+</html>

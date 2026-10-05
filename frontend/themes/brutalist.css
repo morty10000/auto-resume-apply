@@ -1,0 +1,215 @@
+/* ============================================================
+   界面风格皮肤：新野兽派（Neo-Brutalist）
+   规则：纯黑粗边框 border-2/3 / 硬边缘阴影（无模糊）/ 直角 /
+        高对比黑白 + 荧光强调 / hover 硬切背景 / 按钮 active 位移=阴影像素
+   ============================================================ */
+
+:root {
+  --bg: #ffffff;
+  --bg-2: #f2f2f2;
+  --sh-dark: #000000;
+  --sh-light: transparent;
+  --sh-out-xs: 2px 2px 0 0 #000000;
+  --sh-out-sm: 4px 4px 0 0 #000000;
+  --sh-out-md: 6px 6px 0 0 #000000;
+  --sh-out-btn: 5px 5px 0 0 #000000;
+  --sh-out-btn-h: 8px 8px 0 0 #000000;   /* 本风格：hover 增大阴影（力量感） */
+  --sh-in: none;
+  --sh-in-deep: none;
+  --sh-in-sm: none;
+  --accent: #ff006e;
+  --accent-ink: #c60055;
+  --accent-ring: rgba(255, 0, 110, .3);
+  --accent-soft: #ffff00;
+  --text: #000000;
+  --text-2: #262626;
+  --text-3: #404040;
+  --ok: #0a6a34;   --ok-dot: #00a651;
+  --warn: #8a4b00; --warn-dot: #ff9500;
+  --err: #c60039;  --err-dot: #ff2d2d;
+  --radius: 0; --radius-sm: 0; --radius-xs: 0;
+  --tint: #ffff00;              /* hover 硬切亮黄 */
+  --tint-strong: #eeeeee;
+  --hairline: #000000;
+  --hairline-soft: #000000;
+  --placeholder: #555555;
+  --muted-line: #000000;
+  --scroll-hover: #999999;
+  --log-text: #111111;
+  --tn: .15s ease-out;
+}
+
+body {
+  background: #ffffff;
+  color: #000000;
+  font-family: Consolas, "Courier New", ui-monospace, "Microsoft YaHei UI", "PingFang SC", monospace;
+}
+::selection { background: #ffff00; color: #000000; }
+
+/* 背景色/描边切换一律硬切（0s），仅位置与阴影做 150ms 过渡 */
+.btn, .tab, .chip, .preset, .platform-card, .theme-opt, .seg-btn, .tag,
+.card, .stat-card, .today-stat, .drop-zone, .check {
+  transition: box-shadow .15s ease-out, transform .15s ease-out, color 0s, background-color 0s, border-color 0s;
+}
+
+h2 { font-weight: 900; letter-spacing: .01em; }
+h2::before { width: 12px; height: 12px; border-radius: 0; background: #ff006e; border: 2px solid #000; box-shadow: none; }
+.hint { color: #333333; }
+.link { color: #c60055; }
+.accent-text { color: #c60055; font-weight: 800; }
+
+::-webkit-scrollbar-thumb { background: #000000; border-radius: 0; border: 2px solid #ffffff; }
+::-webkit-scrollbar-thumb:hover { background: #ff006e; }
+
+/* 顶栏 / 品牌 */
+.topbar { background: #ffffff; box-shadow: none; border-bottom: 4px solid #000000; }
+.brand { font-weight: 900; }
+.brand-dot { border-radius: 0; background: #ff006e; border: 2px solid #000000; box-shadow: none; }
+
+/* 状态胶囊 */
+.pill { background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: 3px 3px 0 0 #000000; }
+.pill-idle, .pill-stopped { color: #000000; }
+.pill-running { color: #c60055; }
+.pill-paused { color: #8a4b00; }
+.pill-done { color: #0a6a34; }
+.pill-running::before, .dot-waiting, .ms-live-beat.on, .flow-step.active .fs-dot { animation: none; }
+
+/* 标签栏：DOS 式分段 */
+.tabs { background: #ffffff; border: 3px solid #000000; border-radius: 0; box-shadow: none; padding: 0; gap: 0; }
+.tab { border-radius: 0; border-right: 2px solid #000000; padding: 9px 14px; font-weight: 700; color: #000000; }
+.tab:last-child { border-right: 0; }
+.tab:hover { background: #ffff00; color: #000000; }
+.tab.active { background: #000000; color: #ffffff; box-shadow: none; font-weight: 900; }
+.tab.active:hover { background: #000000; color: #ffffff; }
+
+/* 风格切换器 */
+.theme-btn { border: 2px solid #000000; border-radius: 0; box-shadow: 3px 3px 0 0 #000000; font-weight: 800; }
+.theme-btn:not(:disabled):hover { background: #ffff00; box-shadow: 5px 5px 0 0 #000000; transform: translate(-1px, -1px); }
+.theme-menu { background: #ffffff; border: 3px solid #000000; border-radius: 0; box-shadow: 8px 8px 0 0 #000000; padding: 0; gap: 0; }
+.theme-opt { border-radius: 0; border-bottom: 2px solid #000000; }
+.theme-opt:last-child { border-bottom: 0; }
+.theme-opt:hover { background: #ffff00; }
+.theme-opt.selected { background: #000000; }
+.theme-opt.selected .to-name { color: #ccff00; font-weight: 900; }
+.theme-opt.selected .to-desc { color: #d9d9d9; }
+.theme-opt.selected .to-check { color: #ccff00; }
+
+/* 卡片 */
+.card { background: #ffffff; border: 3px solid #000000; border-radius: 0; box-shadow: 6px 6px 0 0 #000000; }
+
+/* 按钮：Physical Crushing（active 位移 = 阴影像素） */
+.btn { border: 2px solid #000000; border-radius: 0; background: #ffffff; color: #000000; font-weight: 800; box-shadow: 4px 4px 0 0 #000000; }
+.btn:not(:disabled):hover { background: #ffff00; box-shadow: 8px 8px 0 0 #000000; transform: translate(-2px, -2px); }
+.btn:not(:disabled):active { box-shadow: none; transform: translate(4px, 4px); }
+.btn-primary { background: #ff006e; color: #ffffff; border-color: #000000; }
+.btn-primary:not(:disabled):hover { background: #ff006e; }
+.btn-primary:not(:disabled):active { box-shadow: none; transform: translate(4px, 4px); }
+.btn-danger-ghost { color: #c60039; }
+.btn-warn { color: #8a4b00; }
+.btn-sm { box-shadow: 3px 3px 0 0 #000000; }
+.btn-sm:not(:disabled):hover { box-shadow: 6px 6px 0 0 #000000; transform: translate(-2px, -2px); }
+.btn-sm:not(:disabled):active { box-shadow: none; transform: translate(3px, 3px); }
+.btn:disabled { opacity: 1; background: #e0e0e0; color: #808080; border-color: #808080; box-shadow: 3px 3px 0 0 #808080; }
+
+/* 输入控件：黑框 + focus 硬影 */
+input[type="number"], input[type="text"], input:not([type]), select, textarea {
+  background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; color: #000000;
+}
+input:focus, select:focus, textarea:focus { outline: none; border-color: #000000; box-shadow: 4px 4px 0 0 #000000; }
+input[type="range"] { height: 24px; }
+input[type="range"]::-webkit-slider-runnable-track { height: 12px; background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; }
+input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -5px; border-radius: 0; background: #ff006e; border: 2px solid #000000; box-shadow: none; }
+input[type="range"]:hover::-webkit-slider-thumb { box-shadow: none; }
+input[type="range"]:active::-webkit-slider-thumb { box-shadow: none; background: #ccff00; }
+
+/* 标签输入 / 标签 / chips / 分段 */
+.tag-input { background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; }
+.tag-input:focus-within { box-shadow: 4px 4px 0 0 #000000; }
+.tag { background: #ccff00; border: 2px solid #000000; border-radius: 0; color: #000000; font-weight: 700; box-shadow: none; }
+.tag-x { opacity: 1; font-weight: 900; }
+.preset { background: #ffffff; border: 2px solid #000000; border-radius: 0; color: #000000; font-weight: 700; box-shadow: 2px 2px 0 0 #000000; }
+.preset:hover { background: #ffff00; color: #000000; box-shadow: 4px 4px 0 0 #000000; transform: translate(-1px, -1px); }
+.preset:active { box-shadow: none; transform: translate(2px, 2px); }
+.chip { background: #ffffff; border: 2px solid #000000; border-radius: 0; color: #000000; font-weight: 700; box-shadow: 2px 2px 0 0 #000000; }
+.chip:hover { background: #ffff00; color: #000000; box-shadow: 4px 4px 0 0 #000000; transform: translate(-1px, -1px); }
+.chip:active { box-shadow: none; transform: translate(2px, 2px); }
+.chip.selected { background: #000000; color: #ccff00; box-shadow: none; }
+.seg { background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; padding: 0; gap: 0; }
+.seg-btn { border-radius: 0; border-right: 2px solid #000000; font-weight: 700; }
+.seg-btn:last-child { border-right: 0; }
+.seg-btn:hover { color: #000000; background: #ffff00; }
+.seg-btn.active { background: #000000; color: #ffffff; box-shadow: none; }
+
+/* 平台卡片 */
+.platform-card { background: #ffffff; border: 3px solid #000000; border-radius: 0; box-shadow: 5px 5px 0 0 #000000; }
+.platform-card:hover { background: #ffff00; box-shadow: 8px 8px 0 0 #000000; transform: translate(-2px, -2px); }
+.platform-card.selected { background: #000000; box-shadow: 5px 5px 0 0 #000000; }
+.platform-card.selected .pc-name { color: #ccff00; }
+.platform-card.selected .pc-foot { color: #e5e5e5; }
+.platform-card.selected .login-ok { color: #7cff9b; }
+.check { border: 2px solid #000000; border-radius: 0; background: #ffffff; box-shadow: none; color: #000000; }
+.platform-card:hover .check { box-shadow: none; }
+.platform-card.selected .check { background: #ccff00; color: #000000; border-color: #ccff00; box-shadow: none; }
+.status-dot { width: 10px; height: 10px; border-radius: 0; border: 1px solid #000000; }
+.dot-on { background: #00a651; box-shadow: none; }
+.dot-off { background: #d4d4d4; }
+.dot-unknown { background: #999999; }
+.dot-waiting { background: #ff9500; }
+.platform-card.selected .status-dot { border-color: #ccff00; }
+.login-ok { color: #0a6a34; }
+
+/* 今日数据 */
+.today-stats-head { border-top: 3px solid #000000; color: #000000; font-weight: 800; }
+.today-stat { background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; }
+
+/* 简历页 */
+.drop-zone { background: #ffffff; border: 3px dashed #000000; border-radius: 0; box-shadow: none; }
+.drop-zone:hover, .drop-zone.dragover { background: #ffff00; color: #000000; box-shadow: none; }
+.resume-busy { color: #c60055; font-weight: 800; }
+.resume-result { background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; }
+.rs-badge { background: #ccff00; border: 2px solid #000000; border-radius: 0; color: #000000; box-shadow: none; font-weight: 700; }
+.skill { background: #ffffff; border: 2px solid #000000; border-radius: 0; color: #000000; box-shadow: 2px 2px 0 0 #000000; }
+.skill-kw:hover { background: #ffff00; box-shadow: none; }
+
+/* 监控页 */
+.verify-banner { background: #ff9500; border: 3px solid #000000; border-radius: 0; color: #000000; box-shadow: 6px 6px 0 0 #000000; font-weight: 700; }
+.ms-live { background: #f5f5f5; border: 2px solid #000000; border-radius: 0; box-shadow: none; }
+.ms-live-beat { width: 10px; height: 10px; border-radius: 0; background: #999999; border: 1px solid #000000; }
+.ms-live-beat.on { background: #ff006e; }
+.progress-track { height: 14px; background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; }
+.progress-fill { background: #ff006e; border-radius: 0; }
+.progress-percent { color: #c60055; font-weight: 900; }
+.stat-card { background: #ffffff; border: 3px solid #000000; border-radius: 0; box-shadow: 6px 6px 0 0 #000000; }
+.stat-card:hover { transform: translate(-2px, -2px); box-shadow: 8px 8px 0 0 #000000; }
+.stat-card.ok .stat-num { color: #0a6a34; }
+.stat-card.err .stat-num { color: #c60039; }
+.log-box { background: #ffffff; border: 2px solid #000000; border-radius: 0; box-shadow: none; color: #111111; }
+.log-hint { color: #333333; }
+
+/* 表格 */
+th { border-bottom: 3px solid #000000; color: #000000; font-weight: 900; }
+td { border-bottom: 1px solid #000000; }
+tbody tr:hover { background: #ffff00; }
+.status-pill { border: 2px solid #000000; border-radius: 0; background: #ffffff; font-weight: 700; }
+.score-pill { border: 2px solid #000000; border-radius: 0; background: #ffffff; box-shadow: 2px 2px 0 0 #000000; }
+tr.match-detail td { background: #f2f2f2; border-bottom: 2px solid #000000; }
+.md-grid b { color: #c60055; }
+
+/* 操作条 / 流程 */
+.action-bar { background: #ffffff; border: 3px solid #000000; border-radius: 0; box-shadow: 8px 8px 0 0 #000000; }
+.fs-dot { width: 12px; height: 12px; border-radius: 0; background: #ffffff; border: 2px solid #000000; box-shadow: none; }
+.flow-step.active .fs-dot { background: #ff006e; box-shadow: none; }
+.flow-step.done .fs-dot { background: #00a651; box-shadow: none; }
+.flow-step.err .fs-dot { background: #ff2d2d; box-shadow: none; }
+.flow-step.active .fs-label { color: #c60055; }
+.fs-label { color: #333333; }
+.flow-arrow { background: #000000; border-radius: 0; }
+.flow-arrow::after { border-left-color: #000000; }
+
+/* 页脚 / Toast */
+.footer { border-top: 3px solid #000000; padding-top: 12px; color: #333333; font-weight: 600; }
+#realBadge { color: #8a4b00; }
+.toast { background: #ffffff; border: 3px solid #000000; border-radius: 0; box-shadow: 6px 6px 0 0 #000000; color: #000000; font-weight: 600; opacity: 1; transform: none; transition: none; }
+.toast:not(.show) { display: none; }
+
+/* 尊重系统偏好（基础样式中已有全局降级，这里保持动画禁用一致） */

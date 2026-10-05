@@ -1,0 +1,41 @@
+# ============================================================
+# 全自动投递简历系统 — Git 忽略清单
+# 原则：运行数据 / 本机环境 / 开发调试产物 一律不进仓库，
+#       从源头杜绝个人数据（简历、登录态、采集记录）泄漏。
+# ============================================================
+
+# ---- 运行时数据（个人数据都在这里，绝不提交）----
+data/
+dist/
+build_tmp/
+
+# ---- 便携运行环境（体积原因不进仓库；发布用 Release 附件 zip）----
+runtime/
+.venv/
+venv/
+
+# ---- 开发调试脚本（含本机绝对路径与个人文件引用）----
+scripts/_*
+scripts/collect_sample.py
+scripts/diag_boss.py
+scripts/screenshot.py
+scripts/verify_block*.py
+
+# ---- Python 缓存 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ---- 备份与临时文件 ----
+*.bak
+*.orig
+*.tmp
+*.log
+
+# ---- 系统 / 编辑器 ----
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
