@@ -975,15 +975,42 @@ function applyConfig(cfg) {
   renderPlatforms();
 }
 
+/* 服务端配置保存：单飞 + 合并 —— 避免连续操作/自动保存重叠造成的并发写竞争 */
+let cfgSaveBusy = false;
+let cfgSaveDirty = false;
+let cfgSaveBody = '';
+
+async function pumpConfigSave() {
+  if (cfgSaveBusy) return;
+  cfgSaveBusy = true;
+  try {
+    while (cfgSaveDirty) {
+      cfgSaveDirty = false;
+      try {
+        const r = await fetch('/api/userconfig', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: cfgSaveBody,
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      } catch {
+        // 服务暂时不可达 / 保存失败：标记待重存，稍后自动补一次（界面不阻塞）
+        cfgSaveDirty = true;
+        await new Promise(res => setTimeout(res, 1200));
+      }
+    }
+  } finally {
+    cfgSaveBusy = false;
+  }
+}
+
 function saveConfig(silent = false) {
   const cfg = collectConfig();
   localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
   // 同步写入服务端文本文件（data/user_config.json）：关闭 / 重启项目后配置持续保存
-  fetch('/api/userconfig', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config: cfg }),
-  }).catch(() => {});
+  cfgSaveBody = JSON.stringify({ config: cfg });
+  cfgSaveDirty = true;
+  void pumpConfigSave();
   if (!silent) toast('配置已保存（本地 + 文件同步）', 'success');
   return cfg;
 }
