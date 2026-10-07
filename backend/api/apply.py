@@ -2,6 +2,11 @@
 
 - POST /api/apply/run     按分数从高到低投递；每日限额 / 间隔 / 长休息 / 验证熔断
 - GET  /api/applications  投递记录（尝试流水 + 待投递队列）
+
+自动保护（仅自动运行生效，手动单条投递/重试走 job_ids 不受限）：
+1. 岗位级：同一岗位连续失败 ≥3 次（排除验证/未登录等平台级原因）→ 判定疑似下线，自动跳过；
+2. 平台级：同一平台 24 小时内触发安全验证 ≥2 次且 0 次成功 → 本轮跳过该平台投递，
+   避免反复触发验证加深风控（手动处理验证后可用单条重试立即恢复）。
 """
 from __future__ import annotations
 
@@ -9,11 +14,11 @@ import asyncio
 import json
 import random
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.api.match import load_resume
 from backend.core import task_control
@@ -114,6 +119,36 @@ async def run_apply(item: ApplyIn) -> dict:
         hub.enter_stage("apply", "投递沟通", "整理待投递队列…")
         hub.update(percent=62 if is_all else 4)
 
+        # 自动保护①：多次投递失败（非平台级原因）的岗位 → 疑似已下线，自动跳过
+        if not item.job_ids:
+            skipped_names: list[str] = []
+            with session_scope() as s:
+                msg_col = func.coalesce(AppRow.message, "")
+                dead = s.execute(
+                    select(AppRow.job_id, func.count())
+                    .join(JobRow, JobRow.id == AppRow.job_id)
+                    .where(
+                        AppRow.result == "fail",
+                        JobRow.status == JobStatus.MATCHED,
+                        ~msg_col.like("%安全验证%"),
+                        ~msg_col.like("%未登录%"),
+                    )
+                    .group_by(AppRow.job_id)
+                    .having(func.count() >= 3)
+                ).all()
+                for jid, _n in dead:
+                    jr = s.get(JobRow, jid)
+                    if jr is not None:
+                        jr.status = JobStatus.SKIPPED
+                        skipped_names.append(f"#{jid} {jr.title}")
+            if skipped_names:
+                hub.log(
+                    "WARN",
+                    "已自动跳过多次投递失败（≥3 次、疑似岗位下线）的岗位："
+                    + "；".join(skipped_names)
+                    + "（可在「投递记录」里单条重试）",
+                )
+
         with session_scope() as s:
             q = select(JobRow).where(JobRow.status == JobStatus.MATCHED)
             if item.job_ids:
@@ -202,6 +237,29 @@ async def run_apply(item: ApplyIn) -> dict:
                     })
                 hub.log("WARN", f"{display}：登录态失效，跳过 {len(groups[platform])} 个岗位")
                 return
+            # 自动保护②：近 24h 连续触发验证且无成功记录 → 本轮跳过该平台（防止反复触发加深风控）
+            if not item.job_ids:
+                cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+                with session_scope() as _s:
+                    _rows = _s.execute(
+                        select(AppRow.result, AppRow.message)
+                        .join(JobRow, JobRow.id == AppRow.job_id)
+                        .where(JobRow.platform == platform, AppRow.created_at >= cutoff)
+                    ).all()
+                _vf = sum(1 for _r, _m in _rows if _r == "fail" and _m and "安全验证" in _m)
+                _ok = sum(1 for _r, _m in _rows if _r == "success")
+                if _vf >= 2 and _ok == 0:
+                    stat.update({
+                        "ok": False, "skipped": len(groups[platform]),
+                        "reason": "近 24 小时连续触发验证，本轮自动跳过",
+                    })
+                    hub.log(
+                        "WARN",
+                        f"{display}：近 24 小时已 {_vf} 次触发安全验证且无成功记录，"
+                        f"本轮自动跳过（避免反复触发加深风控）。请先在 Edge 里打开{display}"
+                        f"手动完成验证、并手动投递 1~2 个岗位，或暂停该平台 1~2 天后再试。",
+                    )
+                    return
             # 该平台自己的投递节奏（防風控方案；缺省回退全局 delay_min/max）
             p_lo, p_hi = pace_pair(
                 item.pace_by_platform, platform, "apply_delay",

@@ -431,8 +431,9 @@ const PACE_PLATFORMS = ['boss', 'zhilian', 'job51', 'liepin'];
 const PACE_DEFAULTS = {
   boss:    { pages: 5, page: [6, 12], apply: [20, 45] },
   zhilian: { pages: 5, page: [5, 10], apply: [15, 35] },
-  job51:   { pages: 3, page: [5, 10], apply: [15, 35] },
-  liepin:  { pages: 4, page: [4, 8],  apply: [12, 30] },
+  // 2026-10-07 调整：51job / 猎聘近期多次触发安全验证 → 推荐值大幅放缓（宁慢勿险）
+  job51:   { pages: 2, page: [12, 22], apply: [60, 120] },
+  liepin:  { pages: 3, page: [7, 14],  apply: [30, 60] },
 };
 
 function renderPaceGrid() {
