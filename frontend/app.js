@@ -70,8 +70,8 @@ const taskPoll = {
   timer: null,
   lastLogSeq: 0,        // 已渲染的服务端日志游标
   wasActive: false,     // 上一次快照里任务是否在跑（用于检测「后台完成」）
-  inFetch: false,       // 本页是否正 await 着任务 API（本地流程接管时轮询只管横幅）
   doneHandled: false,   // 本次任务的「完成」是否已处理过（防重复提示）
+  submittedAt: 0,       // 本页提交任务的时间（兜底检测「提交后极快结束」）
   lastStatus: null,
   verifyAckAt: 0,       // 用户点「继续运行」的时间（短暂忽略仍残留的 verify_wait）
   lastVerifyWait: false,// 上一轮快照是否有「等待验证」标记（用于检测解除）
@@ -198,15 +198,14 @@ function applyTaskSnapshot(s) {
 
   if (busy) {
     taskPoll.wasActive = true;
-    if (!taskPoll.inFetch) {
-      // 本页没有流程在跑（刷新恢复 / 其他标签页启动）：UI 同步为运行态
-      if (state.run.status !== 'running' && !s.verify_wait && !s.paused) setRunStatus('running');
-      restoreFlowFromSnapshot(s);
-    } else if (s.stage) {
-      restoreFlowFromSnapshot(s);   // 本地流程也跟随服务端阶段，防止进度条滞后
-    }
-  } else if (taskPoll.wasActive && !taskPoll.inFetch) {
-    finishFromPoll(s);   // 后台任务已结束，而本页没有在等它 → 兜底收尾
+    // UI 同步为运行态（刷新恢复 / 其他标签页启动 / 本页刚提交）
+    if (state.run.status !== 'running' && !s.verify_wait && !s.paused) setRunStatus('running');
+    restoreFlowFromSnapshot(s);
+  } else if (
+    taskPoll.wasActive ||
+    (taskPoll.submittedAt && s.finished_at && s.finished_at * 1000 >= taskPoll.submittedAt - 3000)
+  ) {
+    finishFromPoll(s);   // 任务已结束 → 收尾（含「提交后极快结束、轮询未及观察」场景）
   }
 }
 
@@ -231,10 +230,22 @@ function restoreFlowFromSnapshot(s) {
 function finishFromPoll(s) {
   if (taskPoll.doneHandled) return;
   taskPoll.doneHandled = true;
+  taskPoll.submittedAt = 0;
   stopTaskPoll();
+  // 服务端无任务记录（多为服务在任务运行期间重启）→ 明确提示，避免误报「任务完成」
+  if (!s.status || s.status === 'idle') {
+    logWarn('任务状态已丢失（服务可能重启过）——数据均已实时保存，请按需重新启动任务');
+    setRunStatus('idle');
+    resetFlow();
+    void loadRealJobs();
+    void loadMatches();
+    void loadApplications();
+    void loadTodayStats();
+    return;
+  }
   const ok = s.ok !== false;
-  const stoppedByUser = state.run.status === 'stopped';
   const summary = s.summary || (ok ? '任务已结束' : '任务异常结束');
+  const stoppedByUser = state.run.status === 'stopped' || /手动停止/.test(summary);
   if (ok) {
     logOk(`任务完成：${summary}`);
     setRunStatus('done');
@@ -1207,12 +1218,12 @@ function showVerifyBanner(show, text) {
 
 /* ===================== 任务控制 ===================== */
 
-/* 真实采集：调用后端执行 Boss 真实采集（原生标签 + 页面内请求，低频防风控） */
-async function realCollect(cfg, opts = {}) {
-  const r = await fetch('/api/collect/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+/* 提交任务到服务端：立即返回；采集 → 匹配 → 投递 在服务端后台接力执行，
+   页面刷新 / 关闭 / 浏览器挂起都不影响流程（进度仍由监控页轮询展示）。 */
+async function submitPipeline(cfg, stages) {
+  const payload = { stages: stages.slice() };
+  if (stages.includes('collect')) {
+    payload.collect = {
       platforms: cfg.platforms,
       keywords: cfg.keywords,
       cities: cfg.cities,
@@ -1235,8 +1246,33 @@ async function realCollect(cfg, opts = {}) {
       shuffle_keywords: cfg.shuffle_keywords,
       humanize_scroll: cfg.humanize_scroll,
       flow_label: state.run.label || '',
-      ...opts,
-    }),
+    };
+  }
+  if (stages.includes('match')) {
+    payload.match = {
+      threshold: cfg.threshold,
+      salary_min: cfg.salary_min,
+      salary_max: cfg.salary_max,
+      cities: cfg.cities,
+      blacklist: cfg.blacklist,
+      flow_label: state.run.label || '',
+    };
+  }
+  if (stages.includes('apply')) {
+    payload.apply = {
+      daily_limit: cfg.daily_limit,
+      daily_limit_by_platform: cfg.daily_limit_by_platform,
+      pace_by_platform: cfg.pace_by_platform,
+      delay_min: cfg.delay_min,
+      delay_max: cfg.delay_max,
+      greeting: cfg.greeting,
+      flow_label: state.run.label || '',
+    };
+  }
+  const r = await fetch('/api/pipeline/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
@@ -1279,7 +1315,6 @@ async function beginRun(cfg, label, kind = 'all') {
   try {
     const s = await fetchTaskStatus();
     if (s.active || s.busy) {
-      taskPoll.inFetch = false;
       taskPoll.wasActive = true;
       taskPoll.doneHandled = false;
       applyTaskSnapshot(s);
@@ -1290,13 +1325,41 @@ async function beginRun(cfg, label, kind = 'all') {
     }
   } catch { /* 预检失败不阻断启动 */ }
 
-  taskPoll.inFetch = true;
   taskPoll.wasActive = false;
   taskPoll.doneHandled = false;
   await bootstrapPollCursor();
-  startTaskPoll();
 
-  runPipeline(cfg, kindInfo.stages);
+  /* 阶段 0：登录检查（仅提示；服务端执行时会再次逐平台检查并跳过未登录平台） */
+  await checkLoginStage(cfg.platforms);
+
+  /* 提交任务到服务端：立即返回，采集 → 匹配 → 投递 由服务端后台接力 */
+  try {
+    await submitPipeline(cfg, kindInfo.stages);
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (/已有任务|HTTP 409/.test(msg)) {
+      try {
+        const s = await fetchTaskStatus();
+        taskPoll.wasActive = true;
+        taskPoll.doneHandled = false;
+        applyTaskSnapshot(s);
+        startTaskPoll();
+        logWarn('检测到后台已有任务在运行 —— 已接入实时监控，无需重复启动');
+        toast('已有任务在运行，已接入实时监控', 'warn');
+        return;
+      } catch { /* 拿不到状态则按提交失败处理 */ }
+    }
+    logErr(`任务提交失败：${msg}`);
+    resetFlow();
+    setRunStatus('idle');
+    toast(`任务提交失败：${msg}`, 'error');
+    return;
+  }
+  taskPoll.submittedAt = Date.now();
+  taskPoll.wasActive = false;
+  taskPoll.doneHandled = false;
+  startTaskPoll();
+  logOk('任务已提交到服务端 —— 阶段接力由服务端自驱，可随时停止；刷新 / 关闭页面不影响运行');
 }
 
 function onPauseClick() {
@@ -1365,169 +1428,6 @@ async function checkLoginStage(platforms) {
     setFlowState('auth', 'done');
     setFlowSub('auth', '状态查询失败（执行时后端仍会逐平台检查）');
     return true;
-  }
-}
-
-async function runPipeline(cfg, stages) {
-  const startedAt = Date.now();
-  const flowMode = stages.length > 1 ? 'all' : stages[0];   // 服务端任务标记：all / collect / match / apply
-  // 采集 / 匹配阶段是真实调用：进度按阶段占位，投递阶段从 applyBase 起算
-  const progressBase = stages.includes('collect') ? (stages.length > 1 ? 12 : 100) : 0;
-  const applyBase = stages.includes('match') ? Math.max(progressBase, 60) : progressBase;
-
-  try {
-    /* 阶段 0：登录检查（真实查询各平台登录态；查询失败不阻断） */
-    await checkLoginStage(cfg.platforms);
-
-    /* 采集（真实采集：通过 Edge 访问 Boss，低频防风控） */
-    if (stages.includes('collect')) {
-      setFlowState('collect', 'active');
-      const collectLimitDesc = cfg.platforms
-        .map(n => `${PLATFORM_DISPLAY[n]} ${cfg.max_jobs_by_platform[n] ?? cfg.max_jobs}`)
-        .join(' · ');
-      logInfo(`阶段：开始真实采集（关键词 ${cfg.keywords.join('、')} · ${cfg.cities.join('、')} · 上限 ${collectLimitDesc}）…`);
-      let d;
-      try {
-        d = await realCollect(cfg, { flow: flowMode });
-      } catch (e) {
-        logErr(`采集失败：${e.message || e}`);
-        setFlowState('collect', 'err');
-        throw new Error('__abort__');
-      }
-      state.run.stats.collected = d.collected;
-      renderStats();
-      renderResumeBar((d && d.resume) || []);
-      if (d.stopped) {
-        logWarn(`采集已手动停止：保留已采到的 ${d.collected} 个（新入库 ${d.new} 个）`);
-        void loadRealJobs();
-        void loadTodayStats();
-        throw 'stopped';
-      }
-      if (d.by_platform) {
-        Object.entries(d.by_platform).forEach(([name, v]) => {
-          const label = PLATFORM_DISPLAY[name] || name;
-          if (v.ok) logInfo(`${label}：采集 ${v.collected} 个（新增 ${v.new ?? '-'} · 已见 ${v.seen ?? '-'} · 扫描 ${v.scanned} · 过滤 ${v.filtered}${v.body_dropped ? ` · 正文弃 ${v.body_dropped}` : ''}${v.body_rescued ? ` · 正文救回 ${v.body_rescued}` : ''}）`);
-          else logWarn(`${label}：已跳过（${v.reason || '未知原因'}）`);
-        });
-      }
-      (d.samples || []).forEach(j =>
-        logOk(`采集到岗位：${j.title} @ ${j.company}（${j.salary || '-'} · ${j.city || '-'}）`)
-      );
-      logOk(
-        `采集完成：共 ${d.collected} 个` +
-        (d.capped ? '（部分平台已达各自上限，提前结束）' : '（结果已翻完）') +
-        ` ｜ 扫描 ${d.scanned} · 过滤 ${d.filtered} · 新入库 ${d.new}`
-      );
-      setFlowState('collect', 'done');
-      setProgress(progressBase);
-      void loadRealJobs();   // 采集完成即刷新采集记录（无论当前在哪个页）
-    }
-
-    /* 匹配（真实：简历档案 × 数据库岗位，打分落库） */
-    if (stages.includes('match')) {
-      setFlowState('match', 'active');
-      logInfo(`阶段：开始真实匹配打分（阈值 ${cfg.threshold} 分 ｜ 硬过滤：城市/学历/经验/标题黑名单）…`);
-      let d;
-      try {
-        d = await realMatch(cfg, { flow: flowMode });
-      } catch (e) {
-        logErr(`匹配失败：${e.message || e}`);
-        setFlowState('match', 'err');
-        throw new Error('__abort__');
-      }
-      state.run.stats.matched = d.matched;
-      state.lastMatched = d.top || [];
-      renderStats();
-      if (d.stopped) {
-        logWarn(`匹配已手动停止（已完成 ${d.scanned} 个）`);
-        void loadMatches();
-        throw 'stopped';
-      }
-      (d.top || []).slice(0, 5).forEach(j =>
-        logOk(`匹配通过：${j.title} @ ${j.company}（${j.score} 分）`)
-      );
-      if (!d.scanned) {
-        logWarn('数据库里还没有岗位 —— 先回「主页」跑一次「开始采集」，再来匹配');
-      } else {
-        logOk(`匹配完成：扫描 ${d.scanned} 个 ｜ 通过 ${d.matched} 个 ｜ 未通过 ${d.rejected} 个`);
-      }
-      setFlowState('match', 'done');
-      if (stages.includes('apply')) setProgress(applyBase);
-      void loadMatches();
-    }
-
-    /* 投递（真实：对匹配通过的岗位发起沟通，服务器内带节奏与每日限额） */
-    if (stages.includes('apply')) {
-      setFlowState('apply', 'active');
-      const dailyLimitDesc = cfg.platforms
-        .map(n => `${PLATFORM_DISPLAY[n]} ${cfg.daily_limit_by_platform[n] ?? cfg.daily_limit}`)
-        .join(' · ');
-      logInfo(`阶段：开始真实投递（间隔 ${cfg.delay_min}-${cfg.delay_max} 秒 ｜ 每日上限 ${dailyLimitDesc}｜可能持续几分钟，期间请勿关闭页面）…`);
-      let d;
-      try {
-        d = await realApply(cfg, { flow: flowMode });
-      } catch (e) {
-        logErr(`投递失败：${e.message || e}`);
-        setFlowState('apply', 'err');
-        throw new Error('__abort__');
-      }
-      (d.results || []).forEach(r => {
-        const label = PLATFORM_DISPLAY[r.platform] || r.platform || '';
-        if (r.success) logOk(`投递成功：${label} ${r.company} · ${r.title}（${r.message}）`);
-        else logErr(`投递失败：${label} ${r.title}（${r.message}）`);
-      });
-      state.run.stats.applied = d.applied;
-      state.run.stats.failed = d.failed;
-      renderStats();
-      if (d.stopped) {
-        logWarn(`投递已手动停止：成功 ${d.applied} · 失败 ${d.failed}（已投数据已入库）`);
-        void loadMatches();
-        void loadApplications();
-        void loadTodayStats();
-        throw 'stopped';
-      }
-      if (d.queued === 0) {
-        logWarn(d.message || '没有待投递的岗位');
-        toast('没有待投递的岗位 —— 先跑一次「匹配」，或全部已投递', 'warn');
-      } else {
-        logOk(`投递完成：成功 ${d.applied} 个 ｜ 失败 ${d.failed} 个 ｜ 今日各平台合计已投 ${d.daily_used} 个${d.elapsed != null ? `（用时 ${d.elapsed} 秒）` : ''}`);
-        toast('投递完成', 'success');
-      }
-      if (d.need_verify) {
-        logWarn('有平台需要安全验证（验证码），已跳过该平台；处理验证后重新点「开始投递」可继续该平台剩余岗位');
-        toast('有平台需要验证码，已跳过（其余平台继续）', 'warn');
-      }
-      setFlowState('apply', 'done');
-      setProgress(100);
-      void loadMatches();
-      void loadApplications();
-    }
-
-    taskPoll.doneHandled = true;   // 本地已处理完成，避免轮询重复提示
-    setRunStatus('done');
-    if (!stages.includes('match') && !stages.includes('apply')) {
-      logOk(`任务完成：本次真实采集 ${state.run.stats.collected} 个岗位，已写入本地数据库（用时 ${Math.round((Date.now() - startedAt) / 1000)} 秒）`);
-    } else {
-      logOk(`任务完成：采集 ${state.run.stats.collected} 个 ｜ 匹配通过 ${state.run.stats.matched} 个 ｜ 投递成功 ${state.run.stats.applied} 个，失败 ${state.run.stats.failed} 个（用时 ${Math.round((Date.now() - startedAt) / 1000)} 秒）`);
-    }
-    toast('任务完成', 'success');
-  } catch (e) {
-    if (e === 'stopped') {
-      logWarn('任务已手动停止');
-    } else if (e && e.message === '__abort__') {
-      setRunStatus('idle');
-    } else {
-      logErr(`任务异常：${e.message || e}`);
-      const act = document.querySelector('.flow-step.active');
-      if (act) { act.classList.remove('active'); act.classList.add('err'); }
-      setRunStatus('idle');
-    }
-  }
-  // 实时监控收尾：本地流程结束 → 拉一次最终状态渲染横幅；正常完成则停轮询
-  taskPoll.inFetch = false;
-  void loadTodayStats();   // 任务结束刷新「今日数据」
-  if (state.run.status === 'done') {
-    void pollTaskOnce().finally(() => stopTaskPoll());
   }
 }
 
@@ -1603,25 +1503,6 @@ const MATCH_STATUS = {
   applied: '已投递', failed: '投递失败', collected: '已采集', skipped: '已跳过',
 };
 
-async function realMatch(cfg, opts = {}) {
-  const r = await fetch('/api/match/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      threshold: cfg.threshold,
-      salary_min: cfg.salary_min,
-      salary_max: cfg.salary_max,
-      cities: cfg.cities,
-      blacklist: cfg.blacklist,
-      flow_label: state.run.label || '',
-      ...opts,
-    }),
-  });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-  return d;
-}
-
 async function loadMatches() {
   try {
     // 服务端过滤：筛选「仅匹配通过 / 仅未通过」时不在前端截断，
@@ -1635,26 +1516,25 @@ async function loadMatches() {
 
 /* ---- 投递（真实：对匹配通过的岗位发起沟通） ---- */
 
-async function realApply(cfg, opts = {}) {
+/* 单条投递 / 重试（交互式：在「投递记录」页点按钮，直接等待结果返回；不占用全流程） */
+async function retryOneApplication(cfg, jobId) {
   const r = await fetch('/api/apply/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      job_ids: [jobId],
+      limit: 1,
       daily_limit: cfg.daily_limit,
-      daily_limit_by_platform: cfg.daily_limit_by_platform,
-      pace_by_platform: cfg.pace_by_platform,
       delay_min: cfg.delay_min,
       delay_max: cfg.delay_max,
       greeting: cfg.greeting,
-      ...opts,
+      flow_label: '单条重试',
     }),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
   return d;
 }
-
-/* ---- 投递记录（真实数据，来自数据库） ---- */
 
 async function loadApplications() {
   try {
@@ -1771,7 +1651,7 @@ function initResultsEvents() {
     btn.textContent = '投递中…';
     try {
       const cfg = saveConfig(true);
-      const d = await realApply(cfg, { job_ids: [jobId], limit: 1 });
+      const d = await retryOneApplication(cfg, jobId);
       const res = (d.results || [])[0];
       if (res && res.success) {
         toast('已投递', 'success');

@@ -14,6 +14,7 @@ from backend.api.collect import router as collect_api
 from backend.api.resume import router as resume_api
 from backend.api.match import router as match_api
 from backend.api.apply import router as apply_api
+from backend.api.pipeline import router as pipeline_api
 from backend.api.stats import router as stats_api
 from backend.api.userconfig import router as userconfig_api
 from backend.api.task import router as task_api
@@ -53,6 +54,7 @@ app.include_router(collect_api)
 app.include_router(resume_api)
 app.include_router(match_api)
 app.include_router(apply_api)
+app.include_router(pipeline_api)
 app.include_router(stats_api)
 app.include_router(userconfig_api)
 app.include_router(task_api)

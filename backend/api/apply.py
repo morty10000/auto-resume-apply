@@ -100,304 +100,307 @@ async def run_apply(item: ApplyIn) -> dict:
     """执行一轮投递（同步；按平台分组，内部含节奏间隔与每日限额）。"""
     if _lock.locked() or collect_lock.locked() or match_lock.locked():
         raise HTTPException(status_code=409, detail=BUSY_DETAIL)
+    async with _lock:
+        return await _apply_impl(item)
 
+
+async def _apply_impl(item: ApplyIn) -> dict:
+    """投递执行体（不含锁管理）：单阶段入口与全流程编排器共用。"""
     resume = load_resume() or {}
     skills = list(resume.get("skills") or [])
+    hub = task_hub.hub
+    is_all = item.flow == "all"
+    st = hub.state
+    reuse = bool(is_all and st and st.get("active") and st.get("kind") == "all")
+    if not reuse:
+        hub.begin(
+            kind="all" if is_all else "apply",
+            stages=["collect", "match", "apply"] if is_all else ["apply"],
+            label=item.flow_label or "",
+        )
+        task_control.clear()   # 新任务开始：复位上一轮的停止请求
+    hub.enter_stage("apply", "投递沟通", "整理待投递队列…")
+    hub.update(percent=62 if is_all else 4)
 
-    async with _lock:
-        hub = task_hub.hub
-        is_all = item.flow == "all"
-        st = hub.state
-        reuse = bool(is_all and st and st.get("active") and st.get("kind") == "all")
-        if not reuse:
-            hub.begin(
-                kind="all" if is_all else "apply",
-                stages=["collect", "match", "apply"] if is_all else ["apply"],
-                label=item.flow_label or "",
-            )
-            task_control.clear()   # 新任务开始：复位上一轮的停止请求
-        hub.enter_stage("apply", "投递沟通", "整理待投递队列…")
-        hub.update(percent=62 if is_all else 4)
-
-        # 自动保护①：多次投递失败（非平台级原因）的岗位 → 疑似已下线，自动跳过
-        if not item.job_ids:
-            skipped_names: list[str] = []
-            with session_scope() as s:
-                msg_col = func.coalesce(AppRow.message, "")
-                dead = s.execute(
-                    select(AppRow.job_id, func.count())
-                    .join(JobRow, JobRow.id == AppRow.job_id)
-                    .where(
-                        AppRow.result == "fail",
-                        JobRow.status == JobStatus.MATCHED,
-                        ~msg_col.like("%安全验证%"),
-                        ~msg_col.like("%未登录%"),
-                    )
-                    .group_by(AppRow.job_id)
-                    .having(func.count() >= 3)
-                ).all()
-                for jid, _n in dead:
-                    jr = s.get(JobRow, jid)
-                    if jr is not None:
-                        jr.status = JobStatus.SKIPPED
-                        skipped_names.append(f"#{jid} {jr.title}")
-            if skipped_names:
-                hub.log(
-                    "WARN",
-                    "已自动跳过多次投递失败（≥3 次、疑似岗位下线）的岗位："
-                    + "；".join(skipped_names)
-                    + "（可在「投递记录」里单条重试）",
-                )
-
+    # 自动保护①：多次投递失败（非平台级原因）的岗位 → 疑似已下线，自动跳过
+    if not item.job_ids:
+        skipped_names: list[str] = []
         with session_scope() as s:
-            q = select(JobRow).where(JobRow.status == JobStatus.MATCHED)
-            if item.job_ids:
-                q = q.where(JobRow.id.in_(item.job_ids))
-            q = q.order_by(JobRow.match_score.desc(), JobRow.id.asc())
-            rows = s.execute(q).scalars().all()
-            queue = [(r.id, _row_payload(r), r.match_score) for r in rows]
-
-        # 按平台分组（保持分数序），平台之间按各自最高分排序
-        groups: dict[str, list] = {}
-        for row_id, payload, score in queue:
-            groups.setdefault(payload["platform"], []).append((row_id, payload, score))
-        platform_order = sorted(
-            groups, key=lambda p: groups[p][0][2] if groups[p][0][2] is not None else 0, reverse=True
-        )
-        used_all = sum(_daily_used(p) for p in groups)
-        base = {
-            "ok": True, "queued": len(queue), "processed": 0, "applied": 0, "failed": 0,
-            "daily_used": used_all, "daily_limit": item.daily_limit,
-            "by_platform": {},
-            "need_verify": False, "results": [],
-        }
-        if not queue:
-            base["message"] = "没有待投递的岗位（先跑一次匹配，或已全部投递）"
-            hub.log("WARN", "没有待投递的岗位（先跑一次匹配，或已全部投递）")
-            hub.end(ok=True, summary="投递阶段：没有待投递的岗位")
-            return base
-
-        cap = item.limit or len(queue)
-        total = max(1, min(cap, len(queue)))
-        queue_desc = "、".join(f"{p}×{len(groups[p])}" for p in platform_order)
-        limits_desc = "、".join(
-            f"{p}×{int((item.daily_limit_by_platform or {}).get(p, item.daily_limit) or item.daily_limit)}"
-            for p in platform_order
-        )
-        hub.log(
-            "INFO",
-            f"投递队列 {len(queue)} 个（{queue_desc}）｜ 间隔 {item.delay_min:.0f}-{item.delay_max:.0f} 秒"
-            f" ｜ 各平台每日上限 {limits_desc}",
-        )
-        results: list[dict] = []
-        applied = failed = 0
-        need_verify = False
-        started = time.time()
-        processed = 0
-        stop = False
-        by_platform: dict[str, dict] = {}
-
-        def _stopped_response() -> dict:
-            """手动停止：保留已完成的投递记录后返回。"""
-            hub.update(stats={"applied": applied, "failed": failed})
-            hub.log("WARN", f"投递已手动停止：成功 {applied} 个 · 失败 {failed} 个（已投数据已入库）")
-            hub.end(ok=False, summary=f"投递已手动停止（成功 {applied} · 失败 {failed}）")
-            base.update({
-                "processed": len(results), "applied": applied, "failed": failed,
-                "need_verify": need_verify, "results": results, "stopped": True,
-                "daily_used": sum(_daily_used(p) for p in groups),
-                "by_platform": by_platform,
-                "elapsed": round(time.time() - started, 1),
-            })
-            return base
-
-        async def _apply_platform(platform: str) -> None:
-            nonlocal applied, failed, processed, need_verify
-            if stop or processed >= cap:
-                return
-            if task_control.is_cancelled():
-                return
-            await task_control.wait_if_paused()
-            stat = {"ok": True, "applied": 0, "failed": 0, "skipped": 0, "reason": ""}
-            by_platform[platform] = stat
-            try:
-                adapter = get_platform(platform)
-            except ValueError:
-                stat.update({"ok": False, "reason": "适配器未实现", "skipped": len(groups[platform])})
-                hub.log("WARN", f"{platform}：适配器未实现，跳过 {len(groups[platform])} 个岗位")
-                return
-            display = getattr(adapter, "display_name", platform) or platform
-            if not await adapter.check_login():
-                stat.update({"ok": False, "reason": "未登录", "skipped": len(groups[platform])})
-                for row_id, payload, score in groups[platform]:
-                    results.append({
-                        "job_id": row_id, "title": payload.get("title"), "company": payload.get("company"),
-                        "salary": payload.get("salary"), "score": score, "platform": platform,
-                        "success": False, "message": "平台未登录，已跳过",
-                    })
-                hub.log("WARN", f"{display}：登录态失效，跳过 {len(groups[platform])} 个岗位")
-                return
-            # 自动保护②：近 24h 连续触发验证且无成功记录 → 本轮跳过该平台（防止反复触发加深风控）
-            if not item.job_ids:
-                cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-                with session_scope() as _s:
-                    _rows = _s.execute(
-                        select(AppRow.result, AppRow.message)
-                        .join(JobRow, JobRow.id == AppRow.job_id)
-                        .where(JobRow.platform == platform, AppRow.created_at >= cutoff)
-                    ).all()
-                _vf = sum(1 for _r, _m in _rows if _r == "fail" and _m and "安全验证" in _m)
-                _ok = sum(1 for _r, _m in _rows if _r == "success")
-                if _vf >= 2 and _ok == 0:
-                    stat.update({
-                        "ok": False, "skipped": len(groups[platform]),
-                        "reason": "近 24 小时连续触发验证，本轮自动跳过",
-                    })
-                    hub.log(
-                        "WARN",
-                        f"{display}：近 24 小时已 {_vf} 次触发安全验证且无成功记录，"
-                        f"本轮自动跳过（避免反复触发加深风控）。请先在 Edge 里打开{display}"
-                        f"手动完成验证、并手动投递 1~2 个岗位，或暂停该平台 1~2 天后再试。",
-                    )
-                    return
-            # 该平台自己的投递节奏（防風控方案；缺省回退全局 delay_min/max）
-            p_lo, p_hi = pace_pair(
-                item.pace_by_platform, platform, "apply_delay",
-                (float(item.delay_min), float(item.delay_max)),
-            )
-            # 该平台自己的每日上限（by_platform 优先，缺省回退全局 daily_limit）
-            limit_for = (item.daily_limit_by_platform or {}).get(platform, item.daily_limit)
-            limit_for = max(1, min(500, int(limit_for or item.daily_limit)))
-            remaining = max(0, limit_for - _daily_used(platform))
-            hub.update(
-                detail=f"【{display}】开始投递（{len(groups[platform])} 个候选，今日剩余名额 {remaining}"
-                       f" · 节奏 {p_lo:.0f}-{p_hi:.0f}s）…"
-            )
-            hub.log("INFO", f"{display}：本平台投递节奏 {p_lo:.0f}-{p_hi:.0f} 秒")
-
-            platform_total = len(groups[platform])
-            platform_done = 0
-            p_step = 0
-            for row_id, payload, score in groups[platform]:
-                if stop or processed >= cap or remaining <= 0:
-                    break
-                if task_control.is_cancelled():
-                    return
-                await task_control.wait_if_paused()
-                idx = processed + 1
-                if p_step > 0:
-                    lo, hi = p_lo, p_hi
-                    wait = random.uniform(lo, hi)
-                    is_rest = bool(item.rest_every and p_step % item.rest_every == 0)
-                    if is_rest:
-                        lo2, hi2 = sorted((float(item.rest_min), float(item.rest_max)))
-                        wait = random.uniform(lo2, hi2)
-                    hub.update(detail=(
-                        f"长休息 {wait:.0f} 秒（模拟人工节奏，防触发风控）…" if is_rest
-                        else f"投递间隔等待 {wait:.0f} 秒…"
-                    ))
-                    await task_control.cancellable_sleep(wait)
-                    if task_control.is_cancelled():
-                        return
-                p_step += 1
-
-                job = Job(**payload)
-                greeting = _fill_greeting(item.greeting, job, skills)
-                hub.update(detail=f"（{idx}/{total}）正在投递【{display}】{job.title} @ {job.company} …")
-                try:
-                    r = await adapter.apply(job, greeting)
-                except task_control.TaskCancelled:
-                    return
-                except Exception as e:  # noqa: BLE001
-                    r = ApplyResult(success=False, message=f"投递异常（{type(e).__name__}）：{e}")
-                now = time.strftime("%Y-%m-%d %H:%M:%S")
-
-                with session_scope() as s:
-                    s.add(AppRow(job_id=row_id, result="success" if r.success else "fail", message=r.message))
-                    if r.success:
-                        jr = s.get(JobRow, row_id)
-                        jr.status = JobStatus.APPLIED
-                        jr.applied_at = now
-                        ds = s.execute(
-                            select(DailyStat).where(
-                                DailyStat.date == _today(), DailyStat.platform == platform
-                            )
-                        ).scalar_one_or_none()
-                        if ds is None:
-                            ds = DailyStat(date=_today(), platform=platform, applied=0)
-                            s.add(ds)
-                        ds.applied = int(ds.applied or 0) + 1
-
-                processed += 1
-                platform_done += 1
-                if r.success:
-                    applied += 1
-                    stat["applied"] += 1
-                    remaining -= 1
-                    edge_login.note_apply_success(platform)   # 登录态自愈：投递成功 = 会话有效
-                    hub.log("OK", f"（{processed}/{total}）{display} {job.title} 投递成功：{r.message}")
-                else:
-                    failed += 1
-                    stat["failed"] += 1
-                    hub.log("ERR", f"（{processed}/{total}）{display} {job.title} 投递失败：{r.message}")
-                hub.update(
-                    detail=f"已处理 {processed}/{total}：成功 {applied} · 失败 {failed}",
-                    percent=(62 if is_all else 4) + (97 - (62 if is_all else 4)) * processed / total,
-                    stats={"applied": applied, "failed": failed},
+            msg_col = func.coalesce(AppRow.message, "")
+            dead = s.execute(
+                select(AppRow.job_id, func.count())
+                .join(JobRow, JobRow.id == AppRow.job_id)
+                .where(
+                    AppRow.result == "fail",
+                    JobRow.status == JobStatus.MATCHED,
+                    ~msg_col.like("%安全验证%"),
+                    ~msg_col.like("%未登录%"),
                 )
-                results.append({
-                    "job_id": row_id, "title": job.title, "company": job.company,
-                    "salary": job.salary, "score": score, "platform": platform,
-                    "success": r.success, "message": r.message,
-                })
-                if r.need_verify:
-                    need_verify = True
-                    remaining_n = max(0, platform_total - platform_done)
-                    hub.log(
-                        "WARN",
-                        f"{display}：检测到安全验证（验证码），已跳过该平台"
-                        f"（剩余 {remaining_n} 个岗位未处理，处理验证后可续投）",
-                    )
-                    break
-                if (not r.success) and edge_login.is_login_lost_text(r.message or ""):
-                    # 运行期证据：平台明确要求登录 → 状态立即置红 + 跳过该平台剩余岗位
-                    edge_login.mark_login_lost(platform, "投递时平台提示需登录")
-                    stat["reason"] = "未登录"
-                    remaining_n = max(0, platform_total - platform_done)
-                    hub.log(
-                        "WARN",
-                        f"{display}：登录态已失效，已跳过该平台剩余岗位"
-                        f"（剩余 {remaining_n} 个未处理，重新登录后可继续）",
-                    )
-                    break
+                .group_by(AppRow.job_id)
+                .having(func.count() >= 3)
+            ).all()
+            for jid, _n in dead:
+                jr = s.get(JobRow, jid)
+                if jr is not None:
+                    jr.status = JobStatus.SKIPPED
+                    skipped_names.append(f"#{jid} {jr.title}")
+        if skipped_names:
+            hub.log(
+                "WARN",
+                "已自动跳过多次投递失败（≥3 次、疑似岗位下线）的岗位："
+                + "；".join(skipped_names)
+                + "（可在「投递记录」里单条重试）",
+            )
 
-        # ---- 四平台并行投递：每个平台独立协程，各自节奏互不阻塞 ----
-        _results = await asyncio.gather(
-            *[_apply_platform(p) for p in platform_order],
-            return_exceptions=True,
-        )
-        for _r in _results:
-            if isinstance(_r, BaseException) and not isinstance(_r, task_control.TaskCancelled):
-                hub.log("ERR", f"平台投递任务意外异常：{_r!r}")
-        if task_control.is_cancelled():
-            return _stopped_response()
+    with session_scope() as s:
+        q = select(JobRow).where(JobRow.status == JobStatus.MATCHED)
+        if item.job_ids:
+            q = q.where(JobRow.id.in_(item.job_ids))
+        q = q.order_by(JobRow.match_score.desc(), JobRow.id.asc())
+        rows = s.execute(q).scalars().all()
+        queue = [(r.id, _row_payload(r), r.match_score) for r in rows]
 
+    # 按平台分组（保持分数序），平台之间按各自最高分排序
+    groups: dict[str, list] = {}
+    for row_id, payload, score in queue:
+        groups.setdefault(payload["platform"], []).append((row_id, payload, score))
+    platform_order = sorted(
+        groups, key=lambda p: groups[p][0][2] if groups[p][0][2] is not None else 0, reverse=True
+    )
+    used_all = sum(_daily_used(p) for p in groups)
+    base = {
+        "ok": True, "queued": len(queue), "processed": 0, "applied": 0, "failed": 0,
+        "daily_used": used_all, "daily_limit": item.daily_limit,
+        "by_platform": {},
+        "need_verify": False, "results": [],
+    }
+    if not queue:
+        base["message"] = "没有待投递的岗位（先跑一次匹配，或已全部投递）"
+        hub.log("WARN", "没有待投递的岗位（先跑一次匹配，或已全部投递）")
+        hub.end(ok=True, summary="投递阶段：没有待投递的岗位")
+        return base
+
+    cap = item.limit or len(queue)
+    total = max(1, min(cap, len(queue)))
+    queue_desc = "、".join(f"{p}×{len(groups[p])}" for p in platform_order)
+    limits_desc = "、".join(
+        f"{p}×{int((item.daily_limit_by_platform or {}).get(p, item.daily_limit) or item.daily_limit)}"
+        for p in platform_order
+    )
+    hub.log(
+        "INFO",
+        f"投递队列 {len(queue)} 个（{queue_desc}）｜ 间隔 {item.delay_min:.0f}-{item.delay_max:.0f} 秒"
+        f" ｜ 各平台每日上限 {limits_desc}",
+    )
+    results: list[dict] = []
+    applied = failed = 0
+    need_verify = False
+    started = time.time()
+    processed = 0
+    stop = False
+    by_platform: dict[str, dict] = {}
+
+    def _stopped_response() -> dict:
+        """手动停止：保留已完成的投递记录后返回。"""
         hub.update(stats={"applied": applied, "failed": failed})
-        hub.update(percent=100)
-        verify_note = "（有平台遇验证码已跳过，处理后可续投）" if need_verify else ""
-        if is_all:
-            hub.end(ok=True, summary=f"全流程完成：投递成功 {applied} 个 · 失败 {failed} 个{verify_note}")
-        else:
-            hub.end(ok=True, summary=f"投递完成：成功 {applied} 个 · 失败 {failed} 个{verify_note}")
-
+        hub.log("WARN", f"投递已手动停止：成功 {applied} 个 · 失败 {failed} 个（已投数据已入库）")
+        hub.end(ok=False, summary=f"投递已手动停止（成功 {applied} · 失败 {failed}）")
         base.update({
             "processed": len(results), "applied": applied, "failed": failed,
-            "need_verify": need_verify, "results": results,
+            "need_verify": need_verify, "results": results, "stopped": True,
             "daily_used": sum(_daily_used(p) for p in groups),
             "by_platform": by_platform,
             "elapsed": round(time.time() - started, 1),
         })
         return base
+
+    async def _apply_platform(platform: str) -> None:
+        nonlocal applied, failed, processed, need_verify
+        if stop or processed >= cap:
+            return
+        if task_control.is_cancelled():
+            return
+        await task_control.wait_if_paused()
+        stat = {"ok": True, "applied": 0, "failed": 0, "skipped": 0, "reason": ""}
+        by_platform[platform] = stat
+        try:
+            adapter = get_platform(platform)
+        except ValueError:
+            stat.update({"ok": False, "reason": "适配器未实现", "skipped": len(groups[platform])})
+            hub.log("WARN", f"{platform}：适配器未实现，跳过 {len(groups[platform])} 个岗位")
+            return
+        display = getattr(adapter, "display_name", platform) or platform
+        if not await adapter.check_login():
+            stat.update({"ok": False, "reason": "未登录", "skipped": len(groups[platform])})
+            for row_id, payload, score in groups[platform]:
+                results.append({
+                    "job_id": row_id, "title": payload.get("title"), "company": payload.get("company"),
+                    "salary": payload.get("salary"), "score": score, "platform": platform,
+                    "success": False, "message": "平台未登录，已跳过",
+                })
+            hub.log("WARN", f"{display}：登录态失效，跳过 {len(groups[platform])} 个岗位")
+            return
+        # 自动保护②：近 24h 连续触发验证且无成功记录 → 本轮跳过该平台（防止反复触发加深风控）
+        if not item.job_ids:
+            cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            with session_scope() as _s:
+                _rows = _s.execute(
+                    select(AppRow.result, AppRow.message)
+                    .join(JobRow, JobRow.id == AppRow.job_id)
+                    .where(JobRow.platform == platform, AppRow.created_at >= cutoff)
+                ).all()
+            _vf = sum(1 for _r, _m in _rows if _r == "fail" and _m and "安全验证" in _m)
+            _ok = sum(1 for _r, _m in _rows if _r == "success")
+            if _vf >= 2 and _ok == 0:
+                stat.update({
+                    "ok": False, "skipped": len(groups[platform]),
+                    "reason": "近 24 小时连续触发验证，本轮自动跳过",
+                })
+                hub.log(
+                    "WARN",
+                    f"{display}：近 24 小时已 {_vf} 次触发安全验证且无成功记录，"
+                    f"本轮自动跳过（避免反复触发加深风控）。请先在 Edge 里打开{display}"
+                    f"手动完成验证、并手动投递 1~2 个岗位，或暂停该平台 1~2 天后再试。",
+                )
+                return
+        # 该平台自己的投递节奏（防風控方案；缺省回退全局 delay_min/max）
+        p_lo, p_hi = pace_pair(
+            item.pace_by_platform, platform, "apply_delay",
+            (float(item.delay_min), float(item.delay_max)),
+        )
+        # 该平台自己的每日上限（by_platform 优先，缺省回退全局 daily_limit）
+        limit_for = (item.daily_limit_by_platform or {}).get(platform, item.daily_limit)
+        limit_for = max(1, min(500, int(limit_for or item.daily_limit)))
+        remaining = max(0, limit_for - _daily_used(platform))
+        hub.update(
+            detail=f"【{display}】开始投递（{len(groups[platform])} 个候选，今日剩余名额 {remaining}"
+                   f" · 节奏 {p_lo:.0f}-{p_hi:.0f}s）…"
+        )
+        hub.log("INFO", f"{display}：本平台投递节奏 {p_lo:.0f}-{p_hi:.0f} 秒")
+
+        platform_total = len(groups[platform])
+        platform_done = 0
+        p_step = 0
+        for row_id, payload, score in groups[platform]:
+            if stop or processed >= cap or remaining <= 0:
+                break
+            if task_control.is_cancelled():
+                return
+            await task_control.wait_if_paused()
+            idx = processed + 1
+            if p_step > 0:
+                lo, hi = p_lo, p_hi
+                wait = random.uniform(lo, hi)
+                is_rest = bool(item.rest_every and p_step % item.rest_every == 0)
+                if is_rest:
+                    lo2, hi2 = sorted((float(item.rest_min), float(item.rest_max)))
+                    wait = random.uniform(lo2, hi2)
+                hub.update(detail=(
+                    f"长休息 {wait:.0f} 秒（模拟人工节奏，防触发风控）…" if is_rest
+                    else f"投递间隔等待 {wait:.0f} 秒…"
+                ))
+                await task_control.cancellable_sleep(wait)
+                if task_control.is_cancelled():
+                    return
+            p_step += 1
+
+            job = Job(**payload)
+            greeting = _fill_greeting(item.greeting, job, skills)
+            hub.update(detail=f"（{idx}/{total}）正在投递【{display}】{job.title} @ {job.company} …")
+            try:
+                r = await adapter.apply(job, greeting)
+            except task_control.TaskCancelled:
+                return
+            except Exception as e:  # noqa: BLE001
+                r = ApplyResult(success=False, message=f"投递异常（{type(e).__name__}）：{e}")
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+            with session_scope() as s:
+                s.add(AppRow(job_id=row_id, result="success" if r.success else "fail", message=r.message))
+                if r.success:
+                    jr = s.get(JobRow, row_id)
+                    jr.status = JobStatus.APPLIED
+                    jr.applied_at = now
+                    ds = s.execute(
+                        select(DailyStat).where(
+                            DailyStat.date == _today(), DailyStat.platform == platform
+                        )
+                    ).scalar_one_or_none()
+                    if ds is None:
+                        ds = DailyStat(date=_today(), platform=platform, applied=0)
+                        s.add(ds)
+                    ds.applied = int(ds.applied or 0) + 1
+
+            processed += 1
+            platform_done += 1
+            if r.success:
+                applied += 1
+                stat["applied"] += 1
+                remaining -= 1
+                edge_login.note_apply_success(platform)   # 登录态自愈：投递成功 = 会话有效
+                hub.log("OK", f"（{processed}/{total}）{display} {job.title} 投递成功：{r.message}")
+            else:
+                failed += 1
+                stat["failed"] += 1
+                hub.log("ERR", f"（{processed}/{total}）{display} {job.title} 投递失败：{r.message}")
+            hub.update(
+                detail=f"已处理 {processed}/{total}：成功 {applied} · 失败 {failed}",
+                percent=(62 if is_all else 4) + (97 - (62 if is_all else 4)) * processed / total,
+                stats={"applied": applied, "failed": failed},
+            )
+            results.append({
+                "job_id": row_id, "title": job.title, "company": job.company,
+                "salary": job.salary, "score": score, "platform": platform,
+                "success": r.success, "message": r.message,
+            })
+            if r.need_verify:
+                need_verify = True
+                remaining_n = max(0, platform_total - platform_done)
+                hub.log(
+                    "WARN",
+                    f"{display}：检测到安全验证（验证码），已跳过该平台"
+                    f"（剩余 {remaining_n} 个岗位未处理，处理验证后可续投）",
+                )
+                break
+            if (not r.success) and edge_login.is_login_lost_text(r.message or ""):
+                # 运行期证据：平台明确要求登录 → 状态立即置红 + 跳过该平台剩余岗位
+                edge_login.mark_login_lost(platform, "投递时平台提示需登录")
+                stat["reason"] = "未登录"
+                remaining_n = max(0, platform_total - platform_done)
+                hub.log(
+                    "WARN",
+                    f"{display}：登录态已失效，已跳过该平台剩余岗位"
+                    f"（剩余 {remaining_n} 个未处理，重新登录后可继续）",
+                )
+                break
+
+    # ---- 四平台并行投递：每个平台独立协程，各自节奏互不阻塞 ----
+    _results = await asyncio.gather(
+        *[_apply_platform(p) for p in platform_order],
+        return_exceptions=True,
+    )
+    for _r in _results:
+        if isinstance(_r, BaseException) and not isinstance(_r, task_control.TaskCancelled):
+            hub.log("ERR", f"平台投递任务意外异常：{_r!r}")
+    if task_control.is_cancelled():
+        return _stopped_response()
+
+    hub.update(stats={"applied": applied, "failed": failed})
+    hub.update(percent=100)
+    verify_note = "（有平台遇验证码已跳过，处理后可续投）" if need_verify else ""
+    if is_all:
+        hub.end(ok=True, summary=f"全流程完成：投递成功 {applied} 个 · 失败 {failed} 个{verify_note}")
+    else:
+        hub.end(ok=True, summary=f"投递完成：成功 {applied} 个 · 失败 {failed} 个{verify_note}")
+
+    base.update({
+        "processed": len(results), "applied": applied, "failed": failed,
+        "need_verify": need_verify, "results": results,
+        "daily_used": sum(_daily_used(p) for p in groups),
+        "by_platform": by_platform,
+        "elapsed": round(time.time() - started, 1),
+    })
+    return base
 
 
 @router.get("/api/applications")
