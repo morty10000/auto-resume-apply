@@ -1406,7 +1406,7 @@ async function runPipeline(cfg, stages) {
       if (d.by_platform) {
         Object.entries(d.by_platform).forEach(([name, v]) => {
           const label = PLATFORM_DISPLAY[name] || name;
-          if (v.ok) logInfo(`${label}：采集 ${v.collected} 个（扫描 ${v.scanned} · 过滤 ${v.filtered}${v.body_dropped ? ` · 正文弃 ${v.body_dropped}` : ''}${v.body_rescued ? ` · 正文救回 ${v.body_rescued}` : ''}）`);
+          if (v.ok) logInfo(`${label}：采集 ${v.collected} 个（新增 ${v.new ?? '-'} · 已见 ${v.seen ?? '-'} · 扫描 ${v.scanned} · 过滤 ${v.filtered}${v.body_dropped ? ` · 正文弃 ${v.body_dropped}` : ''}${v.body_rescued ? ` · 正文救回 ${v.body_rescued}` : ''}）`);
           else logWarn(`${label}：已跳过（${v.reason || '未知原因'}）`);
         });
       }

@@ -44,6 +44,12 @@ class JobQuery(BaseModel):
     # 约 X 天内有活跃信号才保留（None = 不限）；平台未提供活跃信息时不过滤。
     hr_active_days: int | None = None
 
+    # ---- 已入库岗位集合（采集配额用）----
+    # 这些岗位不占用 max_jobs 配额：配额只统计「新岗位」，
+    # 已入库的岗位仍会返回（用于补录正文），但不会让采集提前停止。
+    # None = 不做区分（兼容旧调用方）。
+    known_ids: set[str] | None = None
+
 
 class Job(BaseModel):
     """标准化岗位。"""

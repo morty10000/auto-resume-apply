@@ -154,6 +154,12 @@ async def run_collect(item: CollectIn) -> dict:
                     # 该平台自己的页数上限（防深翻页；缺省回退全局 max_pages）
                     p_pages = (item.max_pages_by_platform or {}).get(name, item.max_pages)
                     p_pages = max(1, min(50, int(p_pages or item.max_pages)))
+                    # 已入库岗位集合：不占采集配额 —— 配额只统计「新岗位」，
+                    # 老岗位仍会返回（补录正文用），但不会让采集提前停止
+                    with session_scope() as _ks:
+                        _known_ids = set(_ks.execute(
+                            select(JobRow.platform_job_id).where(JobRow.platform == name)
+                        ).scalars().all())
                     # 该平台自己的翻页节奏（防風控方案；缺省回退全局设置）
                     pd_lo, pd_hi = pace_pair(
                         item.pace_by_platform, name, "page_delay",
@@ -165,10 +171,11 @@ async def run_collect(item: CollectIn) -> dict:
                         "page_delay_min": pd_lo,
                         "page_delay_max": pd_hi,
                         "verify_body": bool((item.verify_body_by_platform or {}).get(name, False)),
+                        "known_ids": _known_ids,
                     })
 
                     hub.update(detail=f"{display}：开始搜索岗位"
-                                      f"（上限 {p_limit} 个 · 每词≤{p_pages}页 · 翻页节奏 {pd_lo:.0f}-{pd_hi:.0f}s）…")
+                                      f"（新增上限 {p_limit} 个 · 每词≤{p_pages}页 · 翻页节奏 {pd_lo:.0f}-{pd_hi:.0f}s）…")
                     hub.log("INFO", f"{display}：开始搜索岗位（每词≤{p_pages} 页 · 翻页节奏 {pd_lo:.0f}-{pd_hi:.0f} 秒）")
 
                     def _on_progress(text: str, d: str = display) -> None:
@@ -242,25 +249,34 @@ async def run_collect(item: CollectIn) -> dict:
                     body_rescued = int(getattr(platform, "last_body_rescued", 0) or 0)
                     last_scanned += scanned
                     last_filtered += filtered
+                    all_jobs.extend(jobs)
+                    _before_saved = saved_cnt["n"]
+                    _save_now(jobs)   # 增量入库：该平台完成即写库
+                    _new_cnt = saved_cnt["n"] - _before_saved
+                    _seen_cnt = max(0, len(jobs) - _new_cnt)
                     by_platform[name] = {
-                        "ok": True, "collected": len(jobs), "scanned": scanned, "filtered": filtered,
+                        "ok": True, "collected": len(jobs),
+                        "new": _new_cnt, "seen": _seen_cnt,
+                        "scanned": scanned, "filtered": filtered,
                         "body_dropped": body_dropped,
                         "body_rescued": body_rescued,
-                        "capped": len(jobs) >= p_limit,
+                        "capped": _new_cnt >= p_limit,
                         "limit": p_limit,
                         "samples": [
                             {"title": j.title, "company": j.company, "salary": j.salary, "city": j.city}
                             for j in jobs[:5]
                         ],
                     }
-                    all_jobs.extend(jobs)
-                    _save_now(jobs)   # 增量入库：该平台完成即写库
                     _bd_txt = ""
                     if body_dropped:
                         _bd_txt += f" · 正文弃 {body_dropped}"
                     if body_rescued:
                         _bd_txt += f" · 正文救回 {body_rescued}"
-                    hub.log("OK", f"{display}：采集完成，本轮 {len(jobs)} 个（扫描 {scanned} · 过滤 {filtered}{_bd_txt}）")
+                    hub.log(
+                        "OK",
+                        f"{display}：采集完成，本轮 {len(jobs)} 个"
+                        f"（新增 {_new_cnt} · 已见 {_seen_cnt} · 扫描 {scanned} · 过滤 {filtered}{_bd_txt}）",
+                    )
                 except task_control.TaskCancelled:
                     raise
                 except Exception as e:  # noqa: BLE001

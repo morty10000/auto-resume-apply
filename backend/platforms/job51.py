@@ -288,6 +288,7 @@ class Job51Platform(BasePlatform):
             random.shuffle(keywords)
 
         jobs: list[Job] = []
+        new_count = 0                                    # 新岗位计数（已入库岗位不占配额）
         self.last_partial_jobs = jobs   # 任务停止 / 验证超时时保留已采部分
         self.last_done_keywords = []    # 验证跳过续跑断点：已完成的关键词
         tab: dict | None = None
@@ -440,10 +441,12 @@ class Job51Platform(BasePlatform):
                                 page_dropped += 1
                                 continue
                         seen_ids.add(job.platform_job_id)
-                        seen_ids.add(job.platform_job_id)
                         jobs.append(job)
                         page_kept += 1
-                        if len(jobs) >= query.max_jobs:
+                        # 配额只统计新岗位：已入库岗位不占配额（仍返回，用于补录正文）
+                        if not query.known_ids or job.platform_job_id not in query.known_ids:
+                            new_count += 1
+                        if new_count >= query.max_jobs:
                             break
                     filtered_total += page_dropped
                     logger.info(
@@ -452,19 +455,19 @@ class Job51Platform(BasePlatform):
                     )
                     self.note(
                         f"「{keyword}」·{city} 第 {page_no} 页：命中 {page_kept} 个"
-                        f"（累计 {len(jobs)}/{query.max_jobs}）"
+                        f"（累计新增 {new_count}/{query.max_jobs}）"
                     )
-                    if len(jobs) >= query.max_jobs:
-                        self.note(f"已达到本轮上限 {query.max_jobs} 个，停止采集")
+                    if new_count >= query.max_jobs:
+                        self.note(f"已达到本轮新增上限 {query.max_jobs} 个，停止采集")
                         break
                     total = jw.get("totalcount") or jw.get("totalCount") or 0
                     if total and page_no * PAGE_SIZE >= total:
                         break
                     if len(items) < PAGE_SIZE:
                         break
-                if len(jobs) >= query.max_jobs:
+                if new_count >= query.max_jobs:
                     break
-            if len(jobs) >= query.max_jobs:
+            if new_count >= query.max_jobs:
                 break
             self.last_done_keywords.append(keyword)
         self.last_filtered = filtered_total
@@ -475,7 +478,9 @@ class Job51Platform(BasePlatform):
             self.note(
                 f"正文校验：抓取 {body_fetched} 份正文 · 正文救回 {body_rescued} 个 · 未命中丢弃 {body_dropped} 个"
             )
-        self.note(f"搜索完成：收集 {len(jobs)} 个岗位（扫描 {scanned_total} · 过滤 {filtered_total}）")
+        self.note(
+            f"搜索完成：收集 {len(jobs)} 个岗位（新增 {new_count} · 扫描 {scanned_total} · 过滤 {filtered_total}）"
+        )
         return jobs
 
     # ------------------------------------------------------------ 投递
