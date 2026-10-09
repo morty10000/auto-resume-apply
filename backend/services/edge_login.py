@@ -75,9 +75,11 @@ PLATFORM_LOGIN: dict[str, dict] = {
         "display_name": "51job",
         "login_url": "https://login.51job.com/login.php",
         "cookie_domain": "51job.com",
-        # 2026-10-02 对照实验校准：全新匿名 profile 无 _c_WBKFRo（旧「51job」cookie 已被站点弃用）；
-        # _c_WBKFRo 仅登录后出现（承载登录会话）→ 登录特征
-        "auth_hints": ("_c_WBKFRo",),
+        # 2026-10-09 复审（站点机制变更）：
+        # · _c_WBKFRo 已停用——重新登录后不再出现，且有效期一年的残留会致「假绿灯」，移除；
+        # · 对照实验（全新匿名 profile 访问 www + we.51job.com 均无「51job」cookie）：
+        #   重新登录流程中出现 51job=<cuid%3D…>（承载登录会话，session 级）→ 新登录特征
+        "auth_hints": ("51job",),
     },
     "liepin": {
         "display_name": "猎聘",
@@ -376,10 +378,17 @@ async def _watch(platform: str, timeout_s: int) -> None:
         if not browser.is_running(browser.SYSTEM_KEY):
             closed_streak += 1
             if closed_streak >= 5:
-                set_login_status(platform, "not_logged", "登录窗口已关闭，可重新发起", source="watch")
+                if get_login_status(platform).get("status") == "waiting":
+                    set_login_status(platform, "not_logged", "登录窗口已关闭，可重新发起", source="watch")
                 return
             continue
         closed_streak = 0
+
+        # 状态已被其他通道（cookie 探测 / 运行期校验）判定为已登录 → 本等待任务完成，退出。
+        # （防止：probe 翻绿后本任务仍挂着，跑满超时再把已登录状态覆盖成 not_logged）
+        if get_login_status(platform).get("status") == "logged_in":
+            logger.info("[%s] 登录状态已由其他通道确认，结束等待任务", platform)
+            return
 
         cookies = await browser.read_cookies(browser.SYSTEM_KEY, meta["cookie_domain"])
         if cookies is None:
@@ -411,7 +420,9 @@ async def _watch(platform: str, timeout_s: int) -> None:
             )
             return
 
-    set_login_status(platform, "not_logged", "未检测到登录（超时），可重新发起", source="watch")
+    # 超时收尾：仅当仍处于 waiting 时才落「未登录」，避免覆盖其他通道已确认的状态
+    if get_login_status(platform).get("status") == "waiting":
+        set_login_status(platform, "not_logged", "未检测到登录（超时），可重新发起", source="watch")
 
 
 async def resume_pending_logins() -> None:

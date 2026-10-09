@@ -1737,17 +1737,18 @@ function init() {
   });
   $('#btnGoResume').addEventListener('click', () => switchTab('resume'));
 
-renderPlatformLimits();   // 每平台 采集/投递 数量输入框（必须在 loadConfig 之前渲染）
+  renderPlatformLimits();   // 每平台 采集/投递 数量输入框（必须在 loadConfig 之前渲染）
   renderPaceGrid();         // 防风控方案（按平台差异化节奏）
   loadConfig();
   refreshPlatformStatus();
-  // 登录状态自动刷新：每 60 秒 + 切回页面时（纯本机请求，零平台接触）——
-  // 修复「挂机时平台掉登录，前端卡片仍显示绿灯」的滞后问题
+  // 登录状态自动刷新：平时每 15 秒 + 切回页面时（纯本机请求，零平台接触）——
+  // 覆盖「挂机掉登录」与「刚在 Edge 完成登录后卡片滞后」两种滞后；
+  // 「等待登录」期间还有 startLoginPolling 的 2.5 秒轮询兜底加速，完成登录后数秒内变绿
   setInterval(() => {
-    if (document.visibilityState === 'visible' && !anyWaiting()) void refreshPlatformStatus();
-  }, 60000);
+    if (document.visibilityState === 'visible') void refreshPlatformStatus();
+  }, 15000);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !anyWaiting()) void refreshPlatformStatus();
+    if (document.visibilityState === 'visible') void refreshPlatformStatus();
   });
   void loadTodayStats();
   void loadCurrentResume();
