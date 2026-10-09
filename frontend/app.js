@@ -1624,7 +1624,10 @@ async function realMatch(cfg, opts = {}) {
 
 async function loadMatches() {
   try {
-    const d = await (await fetch('/api/matches')).json();
+    // 服务端过滤：筛选「仅匹配通过 / 仅未通过」时不在前端截断，
+    // 避免高分已投记录占满 200 条上限、把待投队列挤出可视范围
+    const f = ($('#matchFilter') || {}).value || 'all';
+    const d = await (await fetch(`/api/matches?filter=${encodeURIComponent(f)}&limit=400`)).json();
     if (d && Array.isArray(d.rows)) state.matches = d.rows;
   } catch { /* 后端异常时保留现有数据 */ }
   renderMatchLog();
@@ -1729,7 +1732,7 @@ function initMatchEvents() {
     await loadMatches();
     toast('匹配记录已刷新', 'success');
   });
-  $('#matchFilter').addEventListener('change', renderMatchLog);
+  $('#matchFilter').addEventListener('change', () => void loadMatches());
 }
 
 function exportCsv() {
