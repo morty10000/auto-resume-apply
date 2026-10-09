@@ -221,6 +221,59 @@ async def read_cookies(key: str, domain_filter: str | None = None) -> list[dict]
     return None
 
 
+async def delete_cookies(key: str, items: list[dict]) -> int:
+    """按 (name, domain, path) 精确删除 cookie。
+
+    用于「重新登录」前置：清掉可能残留的旧登录 cookie，
+    让登录等待逻辑以「新出现的登录 cookie」为准，避免旧 cookie 造成假登录。
+
+    实现注记（2026-10-09 实测）：浏览器级 CDP 没有 cookie 删除命令
+    （Storage.deleteCookies 不存在；Network.deleteCookies 只在页面会话可用）。
+    因此通过「页面 target 的独立 CDP 会话」调用 Network.deleteCookies：
+    优先选界面页（127.0.0.1 本机页，无平台感知），次选任意 http 页；
+    绝不挂接平台页面。返回成功删除的数量；失败返回已删除数（不抛错）。
+    """
+    if not items:
+        return 0
+    page = None
+    targets = list_targets(key)
+    for t in targets:
+        if t.get("type") == "page" and is_ui_url(t.get("url") or ""):
+            page = t
+            break
+    if page is None:
+        for t in targets:
+            if t.get("type") == "page" and (t.get("url") or "").startswith("http"):
+                page = t
+                break
+    ws_url = (page or {}).get("webSocketDebuggerUrl")
+    if not ws_url:
+        return 0
+    deleted = 0
+    try:
+        async with websockets.connect(ws_url, max_size=16 * 1024 * 1024) as ws:
+            mid = 0
+            for it in items:
+                mid += 1
+                params: dict = {"name": it.get("name") or ""}
+                if it.get("domain"):
+                    params["domain"] = it["domain"]
+                if it.get("path") is not None:
+                    params["path"] = it.get("path") or "/"
+                await ws.send(json.dumps({
+                    "id": mid, "method": "Network.deleteCookies", "params": params,
+                }))
+                for _ in range(20):
+                    reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+                    if reply.get("id") == mid:
+                        if not reply.get("error"):
+                            deleted += 1
+                        break
+    except Exception:  # noqa: BLE001
+        return deleted
+    return deleted
+
+
 def find_target(key: str, substring: str, target_type: str = "page") -> dict | None:
     """在实例中查找 URL 含 substring 的目标（标签页）。"""
     for t in list_targets(key):

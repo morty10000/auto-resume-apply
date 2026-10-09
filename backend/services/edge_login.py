@@ -12,11 +12,47 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 
 from backend.services import browser
 
 logger = logging.getLogger(__name__)
+
+
+def _hint_hits(meta: dict, cookies: list[dict] | None) -> set[str]:
+    """从 cookie 列表中筛出「未过期的登录特征 cookie 名」。
+
+    关键点（2026-10-09 修复假绿灯）：
+    - 特征 cookie 必须未过期（会话 cookie / expires<=0 / 未来时间才算有效）
+    - 只看名字命中会把「已失效但长期留存」的 cookie（如 51job 有效期一年的
+      _c_WBKFRo、智联的 rt）误判为已登录 → 必须带过期校验
+    """
+    domain = meta["cookie_domain"]
+    hints = set(meta.get("auth_hints") or ())
+    now = time.time()
+    hits: set[str] = set()
+    for c in cookies or []:
+        name = c.get("name")
+        if name not in hints or domain not in (c.get("domain") or ""):
+            continue
+        exp = c.get("expires")
+        if exp is None or exp <= 0 or exp > now:
+            hits.add(name)
+    return hits
+
+
+# 平台响应里出现这些文案 = 会话已被平台判定失效（运行期比 cookie 更可信的证据）
+_LOGIN_LOST_RE = re.compile(
+    r"请先登录|请登录|登录已失效|登录失效|登录状态.*(失效|异常)|重新登录|未登录|"
+    r"not logged|login required|unauthorized",
+    re.IGNORECASE,
+)
+
+
+def is_login_lost_text(text: str) -> bool:
+    """判断一段接口响应/页面文本是否在提示「需要登录」。"""
+    return bool(_LOGIN_LOST_RE.search(text or ""))
 
 PLATFORM_LOGIN: dict[str, dict] = {
     "boss": {
@@ -122,6 +158,7 @@ async def launch_login_window(platform: str) -> tuple[bool, str]:
 # ---------------------------------------------------------------- 登录状态存储
 
 _status_cache: dict[str, dict] = {}
+_checked_at: dict[str, str] = {}   # 每个平台「最近一次实际检测」的时间（内存态，不落库）
 
 
 def _load_status(platform: str) -> dict | None:
@@ -159,45 +196,138 @@ def get_login_status(platform: str) -> dict:
     return _status_cache[platform]
 
 
-def set_login_status(platform: str, status: str, message: str = "") -> None:
+def get_checked_at(platform: str) -> str | None:
+    """最近一次实际检测的时间（HH:MM:SS）；从未检测过返回 None。"""
+    return _checked_at.get(platform)
+
+
+def edge_running() -> bool:
+    """专用 Edge 是否在运行（未运行时状态无法实时校验）。"""
+    return browser.is_running(browser.SYSTEM_KEY)
+
+
+def set_login_status(platform: str, status: str, message: str = "", source: str = "") -> None:
+    """写入登录状态。source 记录证据来源：
+    cookie = 本地 cookie 探测 / watch = 登录等待任务 / run = 运行期平台响应（最可信）
+    """
     data = {
         "status": status,
         "message": message,
+        "source": source or get_login_status(platform).get("source", ""),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     _status_cache[platform] = data
     _save_status(platform, data)
 
 
+def mark_login_lost(platform: str, evidence: str) -> None:
+    """运行期证据确认平台要求登录（服务端会话失效）→ 立即置为未登录。
+
+    比 cookie 探测更可信：以平台自己的响应为准。
+    source="run" 的状态不会被 cookie 探测自动翻绿（旧 cookie 可能长期残留），
+    必须靠：① 用户点「重新登录」完成新登录 ② 后续运行成功（投递成功自愈）。
+    """
+    cur = get_login_status(platform)
+    msg = f"登录态已失效（{evidence}），请重新登录"
+    if cur.get("status") == "not_logged" and cur.get("message") == msg:
+        return
+    logger.warning("[%s] %s", platform, msg)
+    set_login_status(platform, "not_logged", msg, source="run")
+
+
+def note_apply_success(platform: str) -> None:
+    """运行期投递成功 → 登录态自愈（投递成功是会话有效的最强证据）。"""
+    cur = get_login_status(platform)
+    if cur.get("status") == "logged_in":
+        return
+    set_login_status(platform, "logged_in", "运行校验通过（投递成功，登录有效）", source="run")
+
+
+async def clear_login_cookies(platform: str) -> int:
+    """清掉该平台残留的登录特征 cookie（「重新登录」前置步骤）。
+
+    目的：旧 cookie 残留会让登录等待任务产生「假成功」——
+    用户还没完成新登录，探针就已读到旧特征 cookie 而翻绿。清掉后，
+    只有新登录产生的 cookie 才会被认作成功。
+    """
+    meta = PLATFORM_LOGIN[platform]
+    hints = set(meta.get("auth_hints") or ())
+    if not hints:
+        return 0
+    cookies = await browser.read_cookies(browser.SYSTEM_KEY, meta["cookie_domain"])
+    targets = [c for c in (cookies or []) if c.get("name") in hints]
+    if not targets:
+        return 0
+    n = await browser.delete_cookies(
+        browser.SYSTEM_KEY,
+        [{"name": c.get("name"), "domain": c.get("domain"), "path": c.get("path")} for c in targets],
+    )
+    if n:
+        logger.info("[%s] 已清除 %s 个残留登录 cookie（重新登录前置）", platform, n)
+    return n
+
+
+async def check_platform_login(platform: str) -> bool:
+    """适配器统一登录检查：读 cookie + 过期校验，并同步状态缓存。
+
+    - 读到特征 cookie → 通过（若缓存红色且非 run 来源 → 顺手翻绿）
+    - 特征 cookie 缺失/全过期 → 不通过，且缓存翻红（提示重新登录）
+    - Edge 未运行 / 读取失败 → 回退缓存状态（乐观：缓存绿则放行，运行时自会暴露问题）
+    """
+    meta = PLATFORM_LOGIN[platform]
+    cookies = await browser.read_cookies(browser.SYSTEM_KEY, meta["cookie_domain"])
+    if cookies is None:
+        return get_login_status(platform).get("status") == "logged_in"
+    hits = _hint_hits(meta, cookies)
+    cur = get_login_status(platform)
+    if hits:
+        if cur.get("status") != "logged_in" and cur.get("source") != "run":
+            set_login_status(
+                platform, "logged_in",
+                f"登录成功（特征: {', '.join(sorted(hits))}），登录状态已保存",
+                source="cookie",
+            )
+    else:
+        if cur.get("status") == "logged_in":
+            set_login_status(platform, "not_logged", "本地登录特征缺失，请重新登录", source="cookie")
+    return bool(hits)
+
+
 async def probe_login_states() -> None:
     """实时探测各平台登录态（只读 cookie，零页面接触），并刷新状态缓存。
 
     用于打开页面 / 点击登录时即时反映真实状态：
-    - 检测到特征 cookie 且缓存非 logged_in → 更新为已登录
+    - 检测到未过期的特征 cookie 且缓存非 logged_in（且非运行期判定的失效）→ 更新为已登录
     - 特征 cookie 消失且缓存为 logged_in → 更新为登录态已失效
     - Edge 未运行 / 读取失败 → 不动缓存（保持原状态）
+
+    假绿灯修复（2026-10-09）：
+    - 特征 cookie 带过期校验（_hint_hits），过期残余不再算登录
+    - source="run" 的失效状态不被 cookie 探测翻绿——旧 cookie 可能长期残留
+      （如 51job 的 _c_WBKFRo 有效期一年），必须重新登录或运行成功才能恢复
     """
     if not browser.is_running(browser.SYSTEM_KEY):
         return
     cookies = await browser.read_cookies(browser.SYSTEM_KEY, None)
     if cookies is None:
         return
+    checked = time.strftime("%H:%M:%S")
     for name, meta in PLATFORM_LOGIN.items():
         hints = meta.get("auth_hints") or ()
         if not hints:
             continue
-        domain = meta["cookie_domain"]
-        names = {c.get("name") for c in cookies if domain in (c.get("domain") or "")}
-        hits = names & set(hints)
+        hits = _hint_hits(meta, cookies)
+        _checked_at[name] = checked
         cur = get_login_status(name)
-        if hits and cur.get("status") != "logged_in":
+        if hits and cur.get("status") != "logged_in" and cur.get("source") != "run":
             set_login_status(
                 name,
                 "logged_in",
                 f"登录成功（特征: {', '.join(sorted(hits))}），登录状态已保存",
+                source="cookie",
             )
         elif not hits and cur.get("status") == "logged_in":
-            set_login_status(name, "not_logged", "登录态已失效，请重新登录")
+            set_login_status(name, "not_logged", "登录态已失效，请重新登录", source="cookie")
 
 
 # ---------------------------------------------------------------- 登录等待任务
@@ -218,24 +348,35 @@ async def _watch(platform: str, timeout_s: int) -> None:
     - 存活检测：本机端口 socket（无副作用）
     - 登录证据：从浏览器端点直读 cookie（原始 CDP），出现登录特征 cookie 即判定成功
     - 关键点：不做任何页面级 attach——Playwright 的页面挂接会让 Boss 登录页自我清屏
+    - 防假成功：启动时记录现有特征 cookie 的值；旧 cookie 值未变化前不判定成功
+      （配合「重新登录」前置的 cookie 清理，双重保证）
     """
     meta = PLATFORM_LOGIN[platform]
     hints = meta.get("auth_hints") or ()
     if not hints:
-        set_login_status(platform, "waiting", "请在 Edge 中完成登录（该平台自动检测未接入）")
+        set_login_status(platform, "waiting", "请在 Edge 中完成登录（该平台自动检测未接入）", source="watch")
         return
 
-    set_login_status(platform, "waiting", "等待在 Edge 中完成登录…")
+    set_login_status(platform, "waiting", "等待在 Edge 中完成登录…", source="watch")
     deadline = time.time() + timeout_s
     closed_streak = 0
     seen_names: set[str] = set()
+    # 基线：当前仍在的特征 cookie 值（未变化的旧 cookie 不算新登录）
+    baseline: dict[str, str] = {}
+    if browser.is_running(browser.SYSTEM_KEY):
+        _c0 = await browser.read_cookies(browser.SYSTEM_KEY, meta["cookie_domain"])
+        baseline = {
+            c.get("name"): c.get("value") or ""
+            for c in (_c0 or [])
+            if c.get("name") in hints
+        }
 
     while time.time() < deadline:
         await asyncio.sleep(4)
         if not browser.is_running(browser.SYSTEM_KEY):
             closed_streak += 1
             if closed_streak >= 5:
-                set_login_status(platform, "not_logged", "登录窗口已关闭，可重新发起")
+                set_login_status(platform, "not_logged", "登录窗口已关闭，可重新发起", source="watch")
                 return
             continue
         closed_streak = 0
@@ -247,17 +388,30 @@ async def _watch(platform: str, timeout_s: int) -> None:
         if names - seen_names:
             seen_names |= names
             logger.info("[%s] cookie 变化: %s", platform, sorted(names))
-        hits = names & set(hints)
+        hits = _hint_hits(meta, cookies)
         if hits:
+            fresh = {
+                c.get("name"): c.get("value") or ""
+                for c in cookies
+                if c.get("name") in hits
+            }
+            changed = any(
+                (n not in baseline) or (fresh.get(n) != baseline.get(n))
+                for n in hits
+            )
+            if baseline and not changed:
+                # 旧 cookie 原样还在（值未变化）→ 用户尚未完成新登录，继续等待
+                continue
             logger.info("[%s] 检测到登录特征 cookie: %s", platform, sorted(hits))
             set_login_status(
                 platform,
                 "logged_in",
                 f"登录成功（特征: {', '.join(sorted(hits))}），登录状态已保存",
+                source="watch",
             )
             return
 
-    set_login_status(platform, "not_logged", "未检测到登录（超时），可重新发起")
+    set_login_status(platform, "not_logged", "未检测到登录（超时），可重新发起", source="watch")
 
 
 async def resume_pending_logins() -> None:

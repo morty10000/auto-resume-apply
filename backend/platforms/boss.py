@@ -23,7 +23,7 @@ from playwright.async_api import Error as PlaywrightError
 from backend.core import task_control
 from backend.core.job_filter import body_matches_keyword, keyword_in_list_fields, parse_active_days, passes_filters
 from backend.core.throttle import keyword_delay, page_delay, random_delay
-from backend.services import browser, verify
+from backend.services import browser, edge_login, verify
 from backend.utils.city_codes import resolve_city
 
 from .base import ApplyResult, BasePlatform, Job, JobQuery
@@ -175,10 +175,12 @@ class BossPlatform(BasePlatform):
     # ------------------------------------------------------------ 登录态
 
     async def check_login(self) -> bool:
-        """读浏览器 cookie 判断登录态（零页面接触，防触发反爬）。"""
-        cookies = await browser.read_cookies(browser.SYSTEM_KEY, "zhipin.com")
-        names = {c.get("name") for c in (cookies or [])}
-        return bool(names & set(AUTH_COOKIE_HINTS))
+        """读浏览器 cookie 判断登录态（零页面接触，防触发反爬）。
+
+        统一走 edge_login.check_platform_login：带过期校验，且能同步状态缓存
+        （cookie 消失时前端卡片会同步变红，不再出现「掉登录还显示绿灯」）。
+        """
+        return await edge_login.check_platform_login(PLATFORM_NAME)
 
     async def _extract_active_labels(self, tab: dict) -> dict[str, str]:
         """从当前搜索页 DOM 提取「标题 → 头像旁活跃标签」（失败静默返回空表）。"""
@@ -278,6 +280,8 @@ class BossPlatform(BasePlatform):
                 except ValueError:
                     data = None
                     logger.warning("第 %s 页响应非 JSON：%s", page_no, raw[:100])
+                    if edge_login.is_login_lost_text(raw[:3000]):
+                        edge_login.mark_login_lost(PLATFORM_NAME, "搜索请求被重定向到登录页")
                 if data is not None and data.get("code") == 0:
                     return data
                 if data is not None:
@@ -285,6 +289,10 @@ class BossPlatform(BasePlatform):
                         "第 %s 页接口返回 code=%s message=%s（第 %s 次）",
                         page_no, data.get("code"), data.get("message"), attempt + 1,
                     )
+                    if edge_login.is_login_lost_text(str(data.get("message") or "")):
+                        edge_login.mark_login_lost(
+                            PLATFORM_NAME, f"搜索接口提示：{str(data.get('message'))[:40]}"
+                        )
             else:
                 logger.warning("第 %s 页请求失败（第 %s 次）", page_no, attempt + 1)
             if attempt < 1:

@@ -32,7 +32,7 @@ from backend.db.models import Job as JobRow
 from backend.db.models import JobStatus
 from backend.platforms import get as get_platform
 from backend.platforms.base import ApplyResult, Job
-from backend.services import task_hub
+from backend.services import edge_login, task_hub
 
 router = APIRouter(tags=["apply"])
 
@@ -334,6 +334,7 @@ async def run_apply(item: ApplyIn) -> dict:
                     applied += 1
                     stat["applied"] += 1
                     remaining -= 1
+                    edge_login.note_apply_success(platform)   # 登录态自愈：投递成功 = 会话有效
                     hub.log("OK", f"（{processed}/{total}）{display} {job.title} 投递成功：{r.message}")
                 else:
                     failed += 1
@@ -356,6 +357,17 @@ async def run_apply(item: ApplyIn) -> dict:
                         "WARN",
                         f"{display}：检测到安全验证（验证码），已跳过该平台"
                         f"（剩余 {remaining_n} 个岗位未处理，处理验证后可续投）",
+                    )
+                    break
+                if (not r.success) and edge_login.is_login_lost_text(r.message or ""):
+                    # 运行期证据：平台明确要求登录 → 状态立即置红 + 跳过该平台剩余岗位
+                    edge_login.mark_login_lost(platform, "投递时平台提示需登录")
+                    stat["reason"] = "未登录"
+                    remaining_n = max(0, platform_total - platform_done)
+                    hub.log(
+                        "WARN",
+                        f"{display}：登录态已失效，已跳过该平台剩余岗位"
+                        f"（剩余 {remaining_n} 个未处理，重新登录后可继续）",
                     )
                     break
 

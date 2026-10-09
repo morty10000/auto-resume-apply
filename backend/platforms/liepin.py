@@ -23,7 +23,7 @@ from urllib.parse import quote
 from backend.core import task_control
 from backend.core.job_filter import body_matches_keyword, keyword_in_list_fields, parse_active_days, passes_filters
 from backend.core.throttle import keyword_delay, page_delay, random_delay
-from backend.services import browser, verify
+from backend.services import browser, edge_login, verify
 
 from .base import ApplyResult, BasePlatform, Job, JobQuery
 from .detail import ensure_detail_tab, fetch_detail_text
@@ -131,9 +131,8 @@ class LiepinPlatform(BasePlatform):
     # ------------------------------------------------------------ 登录态
 
     async def check_login(self) -> bool:
-        cookies = await browser.read_cookies(browser.SYSTEM_KEY, "liepin.com")
-        names = {c.get("name") for c in (cookies or [])}
-        return bool(names & set(AUTH_COOKIE_HINTS))
+        """统一走 edge_login.check_platform_login（带过期校验 + 状态缓存同步）。"""
+        return await edge_login.check_platform_login(PLATFORM_NAME)
 
     # ------------------------------------------------------------ 标签页
 
@@ -191,6 +190,8 @@ class LiepinPlatform(BasePlatform):
                     data = json.loads(raw)
                 except ValueError:
                     data = None
+                    if edge_login.is_login_lost_text(raw[:3000]):
+                        edge_login.mark_login_lost(PLATFORM_NAME, "搜索请求被重定向到登录页")
                 if data is not None and int(data.get("flag") or 0) == 1:
                     return data
                 if data is not None:
@@ -198,6 +199,10 @@ class LiepinPlatform(BasePlatform):
                         "猎聘第 %s 页返回 flag=%s msg=%s（第 %s 次）",
                         page_index, data.get("flag"), data.get("msg"), attempt + 1,
                     )
+                    if edge_login.is_login_lost_text(str(data.get("msg") or "")):
+                        edge_login.mark_login_lost(
+                            PLATFORM_NAME, f"搜索接口提示：{str(data.get('msg'))[:40]}"
+                        )
             if attempt < 1:
                 await random_delay(5.0, 12.0)
                 task_control.raise_if_cancelled()

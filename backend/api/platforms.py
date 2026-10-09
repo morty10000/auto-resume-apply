@@ -22,6 +22,7 @@ def _has_adapter(name: str) -> bool:
 async def list_platforms() -> list[dict]:
     """全部平台的登录状态（先用浏览器实时 cookie 校准一遍）。"""
     await edge_login.probe_login_states()
+    running = edge_login.edge_running()
     items = []
     for name, meta in edge_login.PLATFORM_LOGIN.items():
         st = edge_login.get_login_status(name)
@@ -31,7 +32,10 @@ async def list_platforms() -> list[dict]:
             "has_adapter": _has_adapter(name),
             "status": st.get("status", "unknown"),
             "message": st.get("message", ""),
+            "source": st.get("source", ""),
             "updated_at": st.get("updated_at"),
+            "checked_at": edge_login.get_checked_at(name),
+            "edge_running": running,
         })
     return items
 
@@ -51,6 +55,9 @@ async def start_login(name: str, force: bool = False) -> dict:
     ok, msg = await edge_login.launch_login_window(name)
     if not ok:
         raise HTTPException(status_code=500, detail=msg)
+
+    # 清掉可能残留的旧登录 cookie：保证后续「登录成功」判定一定来自新登录
+    await edge_login.clear_login_cookies(name)
 
     meta = edge_login.PLATFORM_LOGIN[name]
     if meta.get("auth_hints"):

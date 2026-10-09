@@ -375,16 +375,26 @@ function renderPlatforms() {
     const logged = st === 'logged_in';
     const dotCls = logged ? 'on' : 'off';
     const foot = logged
-      ? `<span class="login-ok" title="${esc(info.updated_at || '')}">✓ 已登录</span>`
+      ? `<button type="button" class="btn btn-ghost btn-sm" data-login="${p.name}" data-force="1" title="清掉本浏览器里的旧登录状态，重新打开登录页">重新登录</button>`
       : `<button type="button" class="btn btn-ghost btn-sm" data-login="${p.name}">去登录</button>`;
+    // 状态新鲜度提示：最近检测时间 / Edge 未启动说明 / 失效原因
+    let hint = '';
+    if (logged) {
+      hint = info.edge_running === false
+        ? '专用 Edge 未启动，状态未实时验证'
+        : (info.checked_at ? `最近检测 ${esc(info.checked_at)}` : '状态待检测');
+    } else {
+      hint = info.message ? esc(info.message) : (info.checked_at ? `最近检测 ${esc(info.checked_at)}` : '');
+    }
     return `
-      <div class="platform-card ${sel ? 'selected' : ''}" data-name="${p.name}">
+      <div class="platform-card ${sel ? 'selected' : ''}" data-name="${p.name}" title="${esc(info.message || '')}">
         <div class="pc-head"><span class="check"></span><span class="pc-name">${p.display}</span></div>
         <div class="pc-foot">
           <span class="status-dot dot-${dotCls}"></span>
           <span>${logged ? '已登录' : '未登录'}</span>
           ${foot}
         </div>
+        ${hint ? `<div class="pc-hint">${hint}</div>` : ''}
       </div>`;
   }).join('');
   syncPlatformLimitState();
@@ -574,6 +584,9 @@ async function refreshPlatformStatus() {
         status: p.status,
         message: p.message,
         updated_at: p.updated_at,
+        checked_at: p.checked_at,
+        edge_running: p.edge_running,
+        source: p.source,
       };
     });
     renderPlatforms();
@@ -594,9 +607,9 @@ function startLoginPolling() {
   }, 2500);
 }
 
-async function handlePlatformLogin(name) {
+async function handlePlatformLogin(name, force = false) {
   try {
-    const r = await fetch(`/api/platforms/${name}/login`, { method: 'POST' });
+    const r = await fetch(`/api/platforms/${name}/login${force ? '?force=1' : ''}`, { method: 'POST' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
       toast(d.detail || '发起登录失败', 'error');
@@ -621,7 +634,7 @@ function initPlatformEvents() {
     const loginBtn = e.target.closest('[data-login]');
     if (loginBtn) {
       e.stopPropagation();
-      handlePlatformLogin(loginBtn.dataset.login);
+      handlePlatformLogin(loginBtn.dataset.login, loginBtn.dataset.force === '1');
       return;
     }
     const card = e.target.closest('.platform-card');
@@ -1842,9 +1855,17 @@ function init() {
   $('#btnGoResume').addEventListener('click', () => switchTab('resume'));
 
 renderPlatformLimits();   // 每平台 采集/投递 数量输入框（必须在 loadConfig 之前渲染）
-renderPaceGrid();         // 防风控方案（按平台差异化节奏）
+  renderPaceGrid();         // 防风控方案（按平台差异化节奏）
   loadConfig();
   refreshPlatformStatus();
+  // 登录状态自动刷新：每 60 秒 + 切回页面时（纯本机请求，零平台接触）——
+  // 修复「挂机时平台掉登录，前端卡片仍显示绿灯」的滞后问题
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && !anyWaiting()) void refreshPlatformStatus();
+  }, 60000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !anyWaiting()) void refreshPlatformStatus();
+  });
   void loadTodayStats();
   void loadCurrentResume();
   renderStats();
