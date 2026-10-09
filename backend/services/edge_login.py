@@ -42,6 +42,35 @@ def _hint_hits(meta: dict, cookies: list[dict] | None) -> set[str]:
     return hits
 
 
+def _persist_value(meta: dict, cookies: list[dict] | None) -> tuple[str, str] | None:
+    """按 persist_hint 取当前「持久指纹」cookie 的 (name, value)；未配置/不存在返回 None。"""
+    p = meta.get("persist_hint")
+    if not p:
+        return None
+    for c in cookies or []:
+        if c.get("name") == p["name"] and p["domain"] in (c.get("domain") or ""):
+            return (p["name"], str(c.get("value") or ""))
+    return None
+
+
+def _persist_match(meta: dict, cookies: list[dict] | None, cur: dict) -> bool:
+    """持久指纹是否匹配（会话特征丢失后用于「登录态跨重启保留」判定）。"""
+    fp = _persist_value(meta, cookies)
+    if not fp:
+        return False
+    saved = (cur.get("persist") or {}).get(fp[0])
+    return bool(saved) and saved == fp[1]
+
+
+def _refresh_persist(platform: str, meta: dict, cookies: list[dict] | None, hits: set[str]) -> None:
+    """登录证据（hits）出现时刷新持久指纹：记录当前 persist_hint cookie 值。"""
+    if not hits:
+        return
+    fp = _persist_value(meta, cookies)
+    if fp:
+        set_persist_fingerprint(platform, *fp)
+
+
 # 平台响应里出现这些文案 = 会话已被平台判定失效（运行期比 cookie 更可信的证据）
 _LOGIN_LOST_RE = re.compile(
     r"请先登录|请登录|登录已失效|登录失效|登录状态.*(失效|异常)|重新登录|未登录|"
@@ -77,9 +106,18 @@ PLATFORM_LOGIN: dict[str, dict] = {
         "cookie_domain": "51job.com",
         # 2026-10-09 复审（站点机制变更）：
         # · _c_WBKFRo 已停用——重新登录后不再出现，且有效期一年的残留会致「假绿灯」，移除；
-        # · 对照实验（全新匿名 profile 访问 www + we.51job.com 均无「51job」cookie）：
+       # · 对照实验（全新匿名 profile 访问 www + we.51job.com 均无「51job」cookie）：
         #   重新登录流程中出现 51job=<cuid%3D…>（承载登录会话，session 级）→ 新登录特征
         "auth_hints": ("51job",),
+        # 跨会话兜底（2026-10-09 实测）：session cookie 浏览器一重启就丢，但站点仍认登录
+        # （登录态打开 we.51job.com 会直接进「我的职位」个人页；匿名则被弹回登录页）。
+        # 登录证据出现时记录此持久 cookie（uid，28 天）的值作为指纹；
+        # 重启后指纹匹配 → 判「登录态跨会话保留」，不再误报未登录。
+        # （对照实验：JSESSIONID 匿名访问搜索页也会种上，不能作为判定依据）
+        "persist_hint": {"name": "uid", "domain": "www.51job.com"},
+        # 「去登录」触发时的会话复核：原生打开该页，按最终 URL 判断——
+        # 登录态停留业务域（/pc/my/*）；未登录会被弹去 login 域（对照实验口径）
+        "session_check": {"url": "https://we.51job.com/", "login_marker": "login.51job.com"},
     },
     "liepin": {
         "display_name": "猎聘",
@@ -157,6 +195,97 @@ async def launch_login_window(platform: str) -> tuple[bool, str]:
     return False, "登录页打开失败，请重试"
 
 
+# ---------------------------------------------------------------- 会话复核（跨重启假红自愈）
+
+_session_checked_at: dict[str, float] = {}   # 复核冷却时间戳（防连点）
+_SESSION_CHECK_COOLDOWN = 60.0               # 同一平台两次复核的最小间隔（秒）
+
+
+async def verify_live_session(platform: str) -> bool | None:
+    """「会话复核」：原生打开一次平台会话页，凭最终 URL 判断登录是否仍被站点承认。
+
+    背景：session 型登录 cookie 在浏览器重启后丢失，但服务端会话可能仍有效
+    （51job 实测：登录态打开 we 域直接进个人页；匿名则被弹回登录页）。
+    cookie 检测失败时调用本函数复核，避免误报「未登录」。
+
+    返回 True=站点仍认登录 / False=确实未登录 / None=无法判定（未配置/超时/冷却中）。
+    全程零 CDP 挂接：原生转发打开 + 仅读标签 URL（调试端口 HTTP）。
+    """
+    meta = PLATFORM_LOGIN[platform]
+    cfg = meta.get("session_check")
+    if not cfg:
+        return None
+    now = time.time()
+    if now - _session_checked_at.get(platform, 0.0) < _SESSION_CHECK_COOLDOWN:
+        return None
+    if not browser.is_running(browser.SYSTEM_KEY):
+        return None
+    _session_checked_at[platform] = now
+
+    before = {t.get("id") for t in browser.list_targets(browser.SYSTEM_KEY)}
+    if not browser.forward_open(browser.SYSTEM_KEY, cfg["url"]):
+        return None
+
+    # 等新标签出现
+    new_id: str | None = None
+    for _ in range(24):
+        await asyncio.sleep(0.5)
+        for t in browser.list_targets(browser.SYSTEM_KEY):
+            if (
+                t.get("id") not in before
+                and t.get("type") == "page"
+                and meta["cookie_domain"] in (t.get("url") or "")
+            ):
+                new_id = t.get("id")
+                break
+        if new_id:
+            break
+    if not new_id:
+        return None
+
+    # 等 URL 稳定（连续 2 秒不变视为跳转完成）
+    prev: str | None = None
+    stable = 0
+    for _ in range(30):
+        await asyncio.sleep(1.0)
+        cur = None
+        for t in browser.list_targets(browser.SYSTEM_KEY):
+            if t.get("id") == new_id:
+                cur = t.get("url") or ""
+                break
+        if cur and cur == prev:
+            stable += 1
+            if stable >= 2:
+                break
+        else:
+            stable = 0
+            prev = cur
+    final_url = (prev or "").lower()
+    if not final_url:
+        return None
+    if cfg["login_marker"] in final_url:
+        logger.info("[%s] 会话复核：站点要求登录（%s）", platform, final_url[:90])
+        return False
+    if meta["cookie_domain"] in final_url:
+        logger.info("[%s] 会话复核：站点仍认登录（%s）", platform, final_url[:90])
+        return True
+    return None
+
+
+async def mark_session_verified(platform: str) -> None:
+    """会话复核通过：记录当前持久指纹并置为已登录（跨重启后凭指纹快速判定）。"""
+    meta = PLATFORM_LOGIN[platform]
+    cookies = await browser.read_cookies(browser.SYSTEM_KEY, meta["cookie_domain"]) or []
+    fp = _persist_value(meta, cookies)
+    if fp:
+        set_persist_fingerprint(platform, *fp)
+    set_login_status(
+        platform, "logged_in",
+        "会话复核通过：平台仍认登录，状态已恢复",
+        source="cookie",
+    )
+
+
 # ---------------------------------------------------------------- 登录状态存储
 
 _status_cache: dict[str, dict] = {}
@@ -212,12 +341,46 @@ def set_login_status(platform: str, status: str, message: str = "", source: str 
     """写入登录状态。source 记录证据来源：
     cookie = 本地 cookie 探测 / watch = 登录等待任务 / run = 运行期平台响应（最可信）
     """
+    cur = get_login_status(platform)
     data = {
         "status": status,
         "message": message,
-        "source": source or get_login_status(platform).get("source", ""),
+        "source": source or cur.get("source", ""),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    # 持久指纹与状态解耦：状态变更不清指纹（清除走 clear_persist_fingerprint 显式入口）
+    if cur.get("persist"):
+        data["persist"] = cur["persist"]
+    _status_cache[platform] = data
+    _save_status(platform, data)
+
+
+def set_persist_fingerprint(platform: str, name: str, value: str) -> None:
+    """登录证据出现时记录「持久指纹」：persist_hint cookie 的当前值。
+
+    该指纹用于浏览器重启后（session 会话 cookie 丢失）的登录判定：
+    指纹仍在且匹配 → 站点仍认登录（51job 实测），不再误报未登录。
+    """
+    if not name or not value:
+        return
+    cur = get_login_status(platform)
+    persist = dict(cur.get("persist") or {})
+    if persist.get(name) == value:
+        return
+    persist[name] = value
+    data = dict(cur)
+    data["persist"] = persist
+    _status_cache[platform] = data
+    _save_status(platform, data)
+
+
+def clear_persist_fingerprint(platform: str) -> None:
+    """作废持久指纹（「重新登录」前置 / 运行期确认失效时调用）。"""
+    cur = get_login_status(platform)
+    if not cur.get("persist"):
+        return
+    data = dict(cur)
+    data.pop("persist", None)
     _status_cache[platform] = data
     _save_status(platform, data)
 
@@ -234,6 +397,7 @@ def mark_login_lost(platform: str, evidence: str) -> None:
     if cur.get("status") == "not_logged" and cur.get("message") == msg:
         return
     logger.warning("[%s] %s", platform, msg)
+    clear_persist_fingerprint(platform)   # 确认失效 → 指纹作废（必须重新登录）
     set_login_status(platform, "not_logged", msg, source="run")
 
 
@@ -256,6 +420,8 @@ async def clear_login_cookies(platform: str) -> int:
     hints = set(meta.get("auth_hints") or ())
     if not hints:
         return 0
+    # 指纹同步作废：否则旧 uid 残留会让「跨会话判定」在重登完成前就翻绿（假成功）
+    clear_persist_fingerprint(platform)
     cookies = await browser.read_cookies(browser.SYSTEM_KEY, meta["cookie_domain"])
     targets = [c for c in (cookies or []) if c.get("name") in hints]
     if not targets:
@@ -270,10 +436,11 @@ async def clear_login_cookies(platform: str) -> int:
 
 
 async def check_platform_login(platform: str) -> bool:
-    """适配器统一登录检查：读 cookie + 过期校验，并同步状态缓存。
+    """适配器统一登录检查：读 cookie + 过期校验 + 持久指纹兜底，并同步状态缓存。
 
-    - 读到特征 cookie → 通过（若缓存红色且非 run 来源 → 顺手翻绿）
-    - 特征 cookie 缺失/全过期 → 不通过，且缓存翻红（提示重新登录）
+    - 读到特征 cookie → 通过（若缓存红色且非 run 来源 → 顺手翻绿）；同时刷新持久指纹
+    - 特征缺失但持久指纹匹配 → 通过（会话跨浏览器重启保留，站点仍认登录——实测口径）
+    - 特征与指纹都无 → 不通过，且缓存翻红（提示重新登录）
     - Edge 未运行 / 读取失败 → 回退缓存状态（乐观：缓存绿则放行，运行时自会暴露问题）
     """
     meta = PLATFORM_LOGIN[platform]
@@ -283,16 +450,28 @@ async def check_platform_login(platform: str) -> bool:
     hits = _hint_hits(meta, cookies)
     cur = get_login_status(platform)
     if hits:
+        _refresh_persist(platform, meta, cookies, hits)
         if cur.get("status") != "logged_in" and cur.get("source") != "run":
             set_login_status(
                 platform, "logged_in",
                 f"登录成功（特征: {', '.join(sorted(hits))}），登录状态已保存",
                 source="cookie",
             )
-    else:
-        if cur.get("status") == "logged_in":
-            set_login_status(platform, "not_logged", "本地登录特征缺失，请重新登录", source="cookie")
-    return bool(hits)
+        return True
+    if _persist_match(meta, cookies, cur):
+        # 会话特征丢失（浏览器重启），但持久指纹仍匹配 → 站点仍认登录，不误报
+        if cur.get("source") == "run" and cur.get("status") != "logged_in":
+            return False   # 运行期已确认失效的，等待重新登录
+        if cur.get("status") != "logged_in":
+            set_login_status(
+                platform, "logged_in",
+                "登录态跨会话保留（持久凭据复核通过）",
+                source="cookie",
+            )
+        return True
+    if cur.get("status") == "logged_in":
+        set_login_status(platform, "not_logged", "本地登录特征缺失，请重新登录", source="cookie")
+    return False
 
 
 async def probe_login_states() -> None:
@@ -321,14 +500,24 @@ async def probe_login_states() -> None:
         hits = _hint_hits(meta, cookies)
         _checked_at[name] = checked
         cur = get_login_status(name)
-        if hits and cur.get("status") != "logged_in" and cur.get("source") != "run":
-            set_login_status(
-                name,
-                "logged_in",
-                f"登录成功（特征: {', '.join(sorted(hits))}），登录状态已保存",
-                source="cookie",
-            )
-        elif not hits and cur.get("status") == "logged_in":
+        if hits:
+            _refresh_persist(name, meta, cookies, hits)
+            if cur.get("status") != "logged_in" and cur.get("source") != "run":
+                set_login_status(
+                    name,
+                    "logged_in",
+                    f"登录成功（特征: {', '.join(sorted(hits))}），登录状态已保存",
+                    source="cookie",
+                )
+        elif _persist_match(meta, cookies, cur):
+            # 会话特征丢失（浏览器重启），但持久指纹仍匹配 → 站点仍认登录，不误报
+            if cur.get("status") != "logged_in" and cur.get("source") != "run":
+                set_login_status(
+                    name, "logged_in",
+                    "登录态跨会话保留（持久凭据复核通过）",
+                    source="cookie",
+                )
+        elif cur.get("status") == "logged_in":
             set_login_status(name, "not_logged", "登录态已失效，请重新登录", source="cookie")
 
 
@@ -412,6 +601,7 @@ async def _watch(platform: str, timeout_s: int) -> None:
                 # 旧 cookie 原样还在（值未变化）→ 用户尚未完成新登录，继续等待
                 continue
             logger.info("[%s] 检测到登录特征 cookie: %s", platform, sorted(hits))
+            _refresh_persist(platform, meta, cookies, hits)
             set_login_status(
                 platform,
                 "logged_in",

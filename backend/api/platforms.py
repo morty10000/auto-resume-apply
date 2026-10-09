@@ -52,6 +52,15 @@ async def start_login(name: str, force: bool = False) -> dict:
     if not force and current.get("status") == "logged_in":
         return {"status": "logged_in", "message": "已处于登录状态"}
 
+    # 会话复核（仅非强制）：cookie 检测失败，但服务端会话可能仍有效
+    # （session 型登录 cookie 跨浏览器重启丢失）→ 打开会话页看站点还认不认；
+    # 仍认 → 直接恢复登录态（记指纹），不让用户白跑一趟扫码重登
+    if not force:
+        verified = await edge_login.verify_live_session(name)
+        if verified is True:
+            await edge_login.mark_session_verified(name)
+            return {"status": "logged_in", "message": "会话复核通过：平台仍认登录，已恢复登录状态"}
+
     ok, msg = await edge_login.launch_login_window(name)
     if not ok:
         raise HTTPException(status_code=500, detail=msg)

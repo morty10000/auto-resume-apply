@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 import socket
 import subprocess
 import time
@@ -31,7 +33,30 @@ from backend.core.paths import BROWSER_DATA_DIR
 EDGE_CANDIDATES = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
 ]
+
+
+def _edge_from_registry() -> str | None:
+    """从注册表 App Paths 查 Edge（覆盖非标准安装位置 / 被精简的系统盘布局）。"""
+    try:
+        import winreg  # Windows 专用；非 Windows 环境直接跳过
+    except ImportError:
+        return None
+    keys = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"),
+    ]
+    for hive, path in keys:
+        try:
+            with winreg.OpenKey(hive, path) as k:
+                val, _ = winreg.QueryValueEx(k, None)
+        except OSError:
+            continue
+        if val and Path(str(val)).exists():
+            return str(val)
+    return None
 
 # 系统专用窗口：所有平台共用同一个 Edge 实例，平台登录页为其标签页
 SYSTEM_KEY = "system"
@@ -51,10 +76,20 @@ _FALLBACK_PORT = 9390
 
 
 def find_edge() -> str:
+    """定位 msedge.exe：常见安装路径 → 注册表 → PATH，全部落空才抛错。"""
     for p in EDGE_CANDIDATES:
-        if Path(p).exists():
+        if p and Path(p).exists():
             return p
-    raise FileNotFoundError("找不到 msedge.exe，请确认已安装 Microsoft Edge")
+    reg = _edge_from_registry()
+    if reg:
+        return reg
+    which = shutil.which("msedge")
+    if which:
+        return which
+    raise FileNotFoundError(
+        "找不到 Microsoft Edge（msedge.exe）。"
+        "请确认系统已安装 Edge（https://www.microsoft.com/edge 可免费安装）后重试。"
+    )
 
 
 def port_for(key: str) -> int:
