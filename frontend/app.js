@@ -428,7 +428,7 @@ function renderPlatforms() {
 
 const LIMIT_FIELDS = [
   { box: 'maxJobsByPlatform',    prefix: 'maxJobs',    dft: 20, lo: 1, hi: 1000 },
-  { box: 'dailyLimitByPlatform', prefix: 'dailyLimit', dft: 20, lo: 1, hi: 200 },
+  { box: 'dailyLimitByPlatform', prefix: 'dailyLimit', dft: 50, lo: 1, hi: 200 },
 ];
 
 function renderPlatformLimits() {

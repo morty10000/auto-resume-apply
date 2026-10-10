@@ -283,7 +283,15 @@ async def _apply_impl(item: ApplyIn) -> dict:
         platform_done = 0
         p_step = 0
         for row_id, payload, score in groups[platform]:
-            if stop or processed >= cap or remaining <= 0:
+            if stop or processed >= cap:
+                break
+            if remaining <= 0:
+                hub.log(
+                    "WARN",
+                    f"{display}：今日投递名额已用完（{limit_for} 个），本平台余下 "
+                    f"{platform_total - platform_done} 个岗位未处理（明日自动恢复，"
+                    f"或在「投递设置」里调高每日上限）",
+                )
                 break
             if task_control.is_cancelled():
                 return
