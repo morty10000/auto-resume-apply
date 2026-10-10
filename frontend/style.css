@@ -406,6 +406,14 @@ input[type="range"]:active::-webkit-slider-thumb {
   opacity: .72; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* 平台卡片：验证情况行（近 24h 安全验证触发；有=警示橙，无=安静灰） */
+.pc-verify {
+  margin-top: 5px; font-size: 11.5px; line-height: 1.35;
+  color: var(--text-3, var(--text-2)); opacity: .8;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pc-verify.warn { color: var(--warn); opacity: 1; font-weight: 650; }
+
 /* ===================== 今日数据（平台卡下方 → 凹陷槽） ===================== */
 .today-stats-head {
   margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--hairline);

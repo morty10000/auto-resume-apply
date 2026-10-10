@@ -99,6 +99,10 @@ PLATFORM_LOGIN: dict[str, dict] = {
         # 实测：匿名访问只有设备类 cookie（x-zp-client-id / smidV2 等）；
         # at / rt（访问令牌 + 刷新令牌）仅登录后出现 → 登录特征
         "auth_hints": ("at", "rt"),
+        # 访问令牌保活（2026-10-10）：at 为短期令牌（约一周）、rt 为长期刷新令牌；
+        # at 缺失时投递会被弹登录页（当日实测）——运行前若发现 at 缺失，
+        # 访问一次主站让站点用 rt 自动续期换发新 at（同一平台 10 分钟内只做一次）。
+        "keepalive": {"url": "https://www.zhaopin.com/", "must_have": "at"},
     },
     "job51": {
         "display_name": "51job",
@@ -286,6 +290,47 @@ async def mark_session_verified(platform: str) -> None:
     )
 
 
+# ---------------------------------------------------------------- 访问令牌保活（智联 at）
+
+_keepalive_at: dict[str, float] = {}   # 冷却时间戳（防频繁访问）
+_KEEPALIVE_COOLDOWN = 600.0            # 同一平台两次保活的最小间隔（秒）
+
+
+async def _keepalive_refresh(platform: str, meta: dict) -> list[dict] | None:
+    """访问一次平台主站，让站点静默续期短期令牌（如智联的 at）；返回重读的 cookies。
+
+    仅当 meta 配置了 keepalive、且对应令牌确实缺失、且冷却已过时执行；
+    任何失败返回 None（调用方保持原判定）。
+    """
+    ka = meta.get("keepalive")
+    if not ka:
+        return None
+    now = time.time()
+    if now - _keepalive_at.get(platform, 0.0) < _KEEPALIVE_COOLDOWN:
+        return None
+    if not browser.is_running(browser.SYSTEM_KEY):
+        return None
+    _keepalive_at[platform] = now
+    # 优先复用现有平台标签做一次导航（不新开）；没有现成标签才原生转发新开
+    target = next(
+        (
+            t
+            for t in browser.list_targets(browser.SYSTEM_KEY)
+            if t.get("type") == "page" and meta["cookie_domain"] in (t.get("url") or "")
+        ),
+        None,
+    )
+    if target:
+        ok = await browser.raw_navigate(browser.SYSTEM_KEY, target.get("id", ""), ka["url"])
+    else:
+        ok = browser.forward_open(browser.SYSTEM_KEY, ka["url"])
+    if not ok:
+        return None
+    await asyncio.sleep(8.0)   # 给站点续期 / 写入新 cookie 的时间
+    logger.info("[%s] 访问令牌保活完成（%s）", platform, ka["url"])
+    return await browser.read_cookies(browser.SYSTEM_KEY, meta["cookie_domain"])
+
+
 # ---------------------------------------------------------------- 登录状态存储
 
 _status_cache: dict[str, dict] = {}
@@ -450,6 +495,14 @@ async def check_platform_login(platform: str) -> bool:
     hits = _hint_hits(meta, cookies)
     cur = get_login_status(platform)
     if hits:
+        # 访问令牌保活：短期令牌缺失（仍有长期令牌）→ 先访问主站续期一次，
+        # 避免带着「残废会话」进入投递（被弹登录页）——智联实测场景
+        ka = meta.get("keepalive")
+        if ka and ka["must_have"] not in hits:
+            fresh = await _keepalive_refresh(platform, meta)
+            if fresh is not None:
+                cookies = fresh
+                hits = _hint_hits(meta, cookies)
         _refresh_persist(platform, meta, cookies, hits)
         if cur.get("status") != "logged_in" and cur.get("source") != "run":
             set_login_status(

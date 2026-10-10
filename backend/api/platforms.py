@@ -1,8 +1,13 @@
 """平台列表与登录相关 API。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from datetime import datetime, timedelta
 
+from fastapi import APIRouter, HTTPException
+from sqlalchemy import select
+
+from backend.db.database import session_scope
+from backend.db.models import VerifyEvent
 from backend.services import edge_login
 
 router = APIRouter(prefix="/api/platforms", tags=["platforms"])
@@ -23,6 +28,29 @@ async def list_platforms() -> list[dict]:
     """全部平台的登录状态（先用浏览器实时 cookie 校准一遍）。"""
     await edge_login.probe_login_states()
     running = edge_login.edge_running()
+
+    # 验证情况（近 24h 触发次数 + 最近一次时间/来源；平台卡片「验证情况」展示用）
+    cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    verify_map: dict[str, dict] = {}
+    try:
+        with session_scope() as s:
+            rows = s.execute(
+                select(VerifyEvent)
+                .where(VerifyEvent.created_at >= cutoff)
+                .order_by(VerifyEvent.id.desc())
+            ).scalars().all()
+        for r in rows:
+            info = verify_map.setdefault(
+                r.platform, {"count_24h": 0, "last_at": None, "last_source": None, "last_detail": None}
+            )
+            info["count_24h"] += 1
+            if info["last_at"] is None:
+                info["last_at"] = r.created_at
+                info["last_source"] = r.source
+                info["last_detail"] = r.detail
+    except Exception:  # noqa: BLE001  展示功能：任何异常不阻塞平台状态返回
+        verify_map = {}
+
     items = []
     for name, meta in edge_login.PLATFORM_LOGIN.items():
         st = edge_login.get_login_status(name)
@@ -36,6 +64,9 @@ async def list_platforms() -> list[dict]:
             "updated_at": st.get("updated_at"),
             "checked_at": edge_login.get_checked_at(name),
             "edge_running": running,
+            "verify": verify_map.get(name) or {
+                "count_24h": 0, "last_at": None, "last_source": None, "last_detail": None,
+            },
         })
     return items
 

@@ -33,6 +33,7 @@ from backend.db.models import JobStatus
 from backend.platforms import get as get_platform
 from backend.platforms.base import ApplyResult, Job
 from backend.services import edge_login, task_hub
+from backend.services.verify import note_verify_event
 
 router = APIRouter(tags=["apply"])
 
@@ -355,6 +356,7 @@ async def _apply_impl(item: ApplyIn) -> dict:
             })
             if r.need_verify:
                 need_verify = True
+                note_verify_event(platform, "apply", f"「{job.title[:40]}」触发验证（本平台已投 {platform_done} 个）")
                 remaining_n = max(0, platform_total - platform_done)
                 hub.log(
                     "WARN",

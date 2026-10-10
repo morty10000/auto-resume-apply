@@ -156,3 +156,19 @@ def mark_resolved() -> None:
     """[备用·等待模式] 用户点界面「继续运行」：视为人工已处理，立即放行等待中的流程。"""
     _resolved_event.set()
     logger.info("收到人工确认：验证已处理")
+
+
+def note_verify_event(platform: str, source: str, detail: str = "") -> None:
+    """记录一次平台级安全验证触发（平台卡片「验证情况」展示用）。
+
+    - source: collect=采集 / apply=投递
+    - 任何异常都不影响主流程（展示功能，尽力而为）
+    """
+    try:
+        from backend.db.database import session_scope
+        from backend.db.models import VerifyEvent
+
+        with session_scope() as s:
+            s.add(VerifyEvent(platform=platform, source=source, detail=detail[:200] or None))
+    except Exception:  # noqa: BLE001
+        logger.exception("记录验证事件失败（不影响主流程）")

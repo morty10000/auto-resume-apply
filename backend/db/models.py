@@ -5,6 +5,7 @@
     applications  每次投递的流水记录
     configs       用户配置键值对
     daily_stats   每日各平台投递计数（限额用）
+    verify_events 安全验证触发事件（平台卡片「验证情况」展示用）
 """
 from __future__ import annotations
 
@@ -97,3 +98,21 @@ class DailyStat(Base):
     date: Mapped[str] = mapped_column(Text, primary_key=True)       # '2026-10-01'
     platform: Mapped[str] = mapped_column(Text, primary_key=True)
     applied: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+
+
+class VerifyEvent(Base):
+    """平台级安全验证（验证码/滑块）触发事件。
+
+    记录时机：采集或投递流程因验证跳过该平台时（每平台每次运行最多一条）。
+    用途：主页平台卡片「验证情况」展示（近 24h 次数 + 最近一次时间/来源）。
+    """
+
+    __tablename__ = "verify_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)   # collect / apply
+    detail: Mapped[str | None] = mapped_column(Text)            # 简短描述（岗位/关键词等）
+    created_at: Mapped[str] = mapped_column(
+        Text, default=local_now, server_default=text("(datetime('now','localtime'))")
+    )

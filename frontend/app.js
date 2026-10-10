@@ -397,6 +397,18 @@ function renderPlatforms() {
     } else {
       hint = info.message ? esc(info.message) : (info.checked_at ? `最近检测 ${esc(info.checked_at)}` : '');
     }
+    // 验证情况（近 24h 安全验证触发；有记录=橙色提醒，无=正常）
+    const vf = info.verify || {};
+    const vfCount = Number(vf.count_24h || 0);
+    let vfHtml;
+    if (vfCount > 0) {
+      const when = vf.last_at ? String(vf.last_at).slice(5, 16) : '';
+      const src = vf.last_source === 'apply' ? '投递' : (vf.last_source === 'collect' ? '采集' : '');
+      const tip = vf.last_detail ? `（最近：${vf.last_detail}）` : '';
+      vfHtml = `<div class="pc-verify warn" title="近 24 小时触发 ${vfCount} 次安全验证${esc(tip)}">⚠️ 验证：近24h ${vfCount} 次${when ? ` · 最近 ${when}${src ? ' ' + src : ''}` : ''}</div>`;
+    } else {
+      vfHtml = `<div class="pc-verify ok">验证：正常（近24h 0 次）</div>`;
+    }
     return `
       <div class="platform-card ${sel ? 'selected' : ''}" data-name="${p.name}" title="${esc(info.message || '')}">
         <div class="pc-head"><span class="check"></span><span class="pc-name">${p.display}</span></div>
@@ -406,6 +418,7 @@ function renderPlatforms() {
           ${foot}
         </div>
         ${hint ? `<div class="pc-hint">${hint}</div>` : ''}
+        ${vfHtml}
       </div>`;
   }).join('');
   syncPlatformLimitState();
@@ -598,6 +611,7 @@ async function refreshPlatformStatus() {
         checked_at: p.checked_at,
         edge_running: p.edge_running,
         source: p.source,
+        verify: p.verify,
       };
     });
     renderPlatforms();

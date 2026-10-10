@@ -21,7 +21,7 @@ from backend.core.task_locks import BUSY_DETAIL, apply_lock, collect_lock as _lo
 from backend.platforms import get as get_platform
 from backend.platforms.base import JobQuery
 from backend.services import task_hub
-from backend.services.verify import VerifyRequired, VerifyTimeout
+from backend.services.verify import VerifyRequired, VerifyTimeout, note_verify_event
 
 router = APIRouter(tags=["collect"])
 
@@ -201,6 +201,7 @@ async def _collect_impl(item: CollectIn) -> dict:
                         if isinstance(_verr, VerifyRequired)
                         else "等待人工验证超时，已中断"
                     )
+                    note_verify_event(name, "collect", f"{reason_txt}（已采 {len(partial)} 个）")
                     by_platform[name] = {
                         "ok": False, "reason": reason_txt,
                         "collected": len(partial), "scanned": 0, "filtered": 0,
