@@ -548,7 +548,7 @@ async def check_platform_login(platform: str) -> bool:
         if cur.get("source") == "run" and cur.get("status") != "logged_in":
             return False   # 运行期已确认失效的，等待重新登录
         if not await _persist_still_valid(platform, meta, cur):
-            mark_login_lost(platform, "会话复核未通过：站点要求重新登录")
+            mark_login_lost(platform, "会话复核未通过")
             return False
         if cur.get("status") != "logged_in":
             set_login_status(
@@ -602,7 +602,7 @@ async def probe_login_states() -> None:
             if cur.get("source") == "run" and cur.get("status") != "logged_in":
                 continue
             if not await _persist_still_valid(name, meta, cur):
-                mark_login_lost(name, "会话复核未通过：站点要求重新登录")
+                mark_login_lost(name, "会话复核未通过")
                 continue
             if cur.get("status") != "logged_in" and cur.get("source") != "run":
                 set_login_status(

@@ -372,7 +372,7 @@ input[type="range"]:active::-webkit-slider-thumb {
 .opt input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
 
 /* ===================== 平台卡片（选中 = 按下凹陷） ===================== */
-.platform-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 12px; }
+.platform-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 12px; }
 .platform-card {
   border-radius: 16px; padding: 14px 16px;
   cursor: pointer; transition: all var(--tn); background: var(--bg);
@@ -403,14 +403,18 @@ input[type="range"]:active::-webkit-slider-thumb {
 .pc-foot .btn { margin-left: auto; }
 .pc-hint {
   margin-top: 7px; font-size: 11.5px; line-height: 1.35; color: var(--text-2);
-  opacity: .72; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  opacity: .72;
+  /* 最多两行：长提示（如「会话复核未通过」）完整可见，且不会把卡片撑高太多 */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: normal; overflow-wrap: anywhere;
 }
 
 /* 平台卡片：验证情况行（近 24h 安全验证触发；有=警示橙，无=安静灰） */
 .pc-verify {
   margin-top: 5px; font-size: 11.5px; line-height: 1.35;
   color: var(--text-3, var(--text-2)); opacity: .8;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: normal; overflow-wrap: anywhere;
 }
 .pc-verify.warn { color: var(--warn); opacity: 1; font-weight: 650; }
 
@@ -659,7 +663,7 @@ tr.match-detail td {
     --sh-out-md: 4px 4px 8px var(--sh-dark), -4px -4px 8px var(--sh-light);
     --sh-out-btn: 4px 4px 8px var(--sh-dark), -4px -4px 8px var(--sh-light);
   }
-  .platform-grid { grid-template-columns: repeat(2, 1fr); }
+  .platform-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .today-stats { grid-template-columns: repeat(2, 1fr); }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
