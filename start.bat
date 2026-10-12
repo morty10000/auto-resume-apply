@@ -36,9 +36,22 @@ if not exist "%~dp0data\.write_test" (
 )
 del "%~dp0data\.write_test" >nul 2>&1
 
-rem ===== hint: another instance may be running =====
+rem ===== already running? open the UI only, never start a second server =====
 netstat -ano | findstr ":8000" | findstr "LISTENING" >nul 2>&1
-if not errorlevel 1 echo [INFO] Port 8000 is in use - if the UI does not open, another copy may already be running.
+if not errorlevel 1 (
+    curl.exe -s -m 3 -o nul http://127.0.0.1:8000/api/health >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] The app is already running - opening the UI, no second server started.
+        if exist "%~dp0runtime\pythonw.exe" (
+            start "" "%~dp0runtime\pythonw.exe" -X utf8 "%~dp0scripts\open_ui.py"
+        ) else (
+            start "" /min powershell -NoProfile -WindowStyle Hidden -Command "& '%PY%' -X utf8 '%~dp0scripts\open_ui.py'"
+        )
+        ping -n 5 127.0.0.1 >nul
+        exit /b 0
+    )
+    echo [WARN] Port 8000 is used by another program; the server below will fail.
+)
 
 rem ===== launch the UI opener in background (no window) =====
 if exist "%~dp0runtime\pythonw.exe" (
