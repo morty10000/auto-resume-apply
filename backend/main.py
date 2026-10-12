@@ -20,6 +20,7 @@ from backend.api.userconfig import router as userconfig_api
 from backend.api.task import router as task_api
 from backend.core.paths import PROJECT_ROOT
 from backend.db.database import DB_PATH, checkpoint_wal, init_db
+from backend.services import task_hub as task_hub_services
 from backend.services.edge_login import resume_pending_logins
 
 # 服务端日志：输出到控制台（start.bat 会重定向落盘到 data/server_console.log）
@@ -36,6 +37,9 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend"
 async def lifespan(_app: FastAPI):
     init_db()
     checkpoint_wal()   # 启动时收缩 WAL（长期运行后 WAL 会长过数据库本体）
+    interrupted = task_hub_services.note_interrupted_run()
+    if interrupted:
+        logging.getLogger("startup").warning(interrupted)
     await resume_pending_logins()
     yield
 

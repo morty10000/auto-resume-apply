@@ -7,17 +7,59 @@
 - 供采集 / 匹配 / 投递三个 API 与各平台适配器埋点：
   阶段、当前动作、统计数字、进度百分比、事件日志。
 
-全部为内存态；服务重启即归零（与服务端任务锁同一生命周期）。
+任务状态为内存态，服务重启即归零（与服务端任务锁同一生命周期）；
+唯一落盘的是运行标记 data/task_running.json —— 用于下次启动追溯「上次跑到一半被中断」。
 """
 from __future__ import annotations
 
+import json
 import time
 
 from backend.core.paths import DATA_DIR
 
 TASK_LOG_DIR = DATA_DIR / "task_logs"   # 任务事件日志落盘目录（按天一个文件）
+RUNNING_MARKER = DATA_DIR / "task_running.json"   # 运行中标记（进程被关/崩溃后用于追溯）
 MAX_LOGS = 300          # 事件日志最多保留条数（滚动丢弃最旧的）
 STALE_SECONDS = 1800    # 超过多久没有进度更新，视为「疑似中断」自动收敛
+
+
+def note_interrupted_run() -> str | None:
+    """启动时检查上次是否「跑到一半被关掉」，并把结论写进当天任务日志。
+
+    背景：任务状态是内存态，服务重启即归零。用户关掉窗口/断电后再打开，
+    日志里看不出「上次那次跑哪去了」。运行开始时写标记文件、正常结束就删；
+    启动时若标记还在 → 说明上次是被中断的，写一条 WARN 便于追溯。
+    """
+    try:
+        if not RUNNING_MARKER.exists():
+            return None
+        info = json.loads(RUNNING_MARKER.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        info = {}
+    finally:
+        try:
+            RUNNING_MARKER.unlink(missing_ok=True)
+        except OSError:
+            pass
+    kind = info.get("kind") or "未知"
+    label = info.get("label") or ""
+    started = str(info.get("started_str") or "")
+    stages = "、".join(info.get("stages") or [])
+    msg = (
+        f"检测到上次运行被中断（项目被关闭或进程异常退出）：任务={kind}"
+        + (f"（{label}）" if label else "")
+        + (f" 阶段={stages}" if stages else "")
+        + (f" 开始于 {started}" if started else "")
+        + "。已恢复为空闲状态，未落盘的数据可能丢失，可直接重新运行。"
+    )
+    try:
+        TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        f = TASK_LOG_DIR / f"{time.strftime('%Y-%m-%d')}.log"
+        with f.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%H:%M:%S')}] [WARN] {msg}\n")
+    except OSError:
+        pass
+    return msg
 
 
 class TaskHub:
@@ -33,6 +75,19 @@ class TaskHub:
     def begin(self, kind: str, stages: list[str], label: str = "") -> None:
         """开始一个新任务（清空上一任务的日志与状态）。"""
         self._logs = []
+        # 运行标记：进程若被强杀/断电，下次启动能追溯「上次跑到一半被中断」
+        try:
+            RUNNING_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            RUNNING_MARKER.write_text(
+                json.dumps({
+                    "kind": kind, "stages": list(stages), "label": label,
+                    "started_at": time.time(),
+                    "started_str": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
         self.state = {
             "active": True,
             "status": "running",                      # running | done | error
@@ -64,6 +119,10 @@ class TaskHub:
         })
         if ok:
             self.state["percent"] = 100   # 正常结束收尾：进度不会再停在 97%
+        try:
+            RUNNING_MARKER.unlink(missing_ok=True)   # 正常收尾 → 清掉中断标记
+        except OSError:
+            pass
         if summary:
             self.state["summary"] = summary
             self.state["detail"] = summary
