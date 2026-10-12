@@ -258,7 +258,8 @@ async def _apply_impl(item: ApplyIn) -> dict:
                     .where(JobRow.platform == platform, AppRow.created_at >= cutoff)
                 ).all()
             _vf = sum(1 for _r, _m in _rows if _r == "fail" and _m and "安全验证" in _m)
-            _ok = sum(1 for _r, _m in _rows if _r == "success")
+            # 平台返回「此前已沟通」同样是会话有效、无风控的证据 → 一并算作可用
+            _ok = sum(1 for _r, _m in _rows if _r in ("success", "duplicate"))
             if _vf >= 2 and _ok == 0:
                 stat.update({
                     "ok": False, "skipped": len(groups[platform]),
@@ -267,8 +268,10 @@ async def _apply_impl(item: ApplyIn) -> dict:
                 hub.log(
                     "WARN",
                     f"{display}：近 24 小时已 {_vf} 次触发安全验证且无成功记录，"
-                    f"本轮自动跳过（避免反复触发加深风控）。请先在 Edge 里打开{display}"
-                    f"手动完成验证、并手动投递 1~2 个岗位，或暂停该平台 1~2 天后再试。",
+                    f"本轮自动跳过（避免反复触发加深风控）。解除办法：先在 Edge 里打开{display}"
+                    f"手动过验证，再到「投递记录」页对该平台任一岗位点一次「投递」按钮——"
+                    f"成功 1 条即自动解除本保护（直接在浏览器里手投不会被记录，解除不了）；"
+                    f"或暂停该平台 1~2 天后再试。",
                 )
                 return
         # 该平台自己的投递节奏（防風控方案；缺省回退全局 delay_min/max）
