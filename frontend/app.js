@@ -784,7 +784,11 @@ async function loadCurrentResume() {
         engine: d.resume.engine,
         uploaded_at: d.resume.uploaded_at,
       };
+      const _prevResumeName = cfgResumeName;
+      cfgResumeName = d.resume.filename || cfgResumeName;
       renderResumeResult(state.resume);
+      // 历史配置里 resume 曾被写成 null：这次拿到真实简历名后补写回文件（自愈）
+      if (_prevResumeName !== cfgResumeName) saveConfig(true);
     }
   } catch { /* 服务未启动时静默 */ }
 }
@@ -975,11 +979,12 @@ function collectConfig() {
     threshold: clampInt($('#thresholdNum').value, 0, 100, 60),
     greeting: $('#greeting').value.trim(),
     blacklist: blTags.get(),
-    resume: state.resume ? state.resume.filename : null,
+    resume: state.resume ? state.resume.filename : (cfgResumeName || null),
   };
 }
 
 function applyConfig(cfg) {
+  if (cfg.resume) cfgResumeName = cfg.resume;
   state.selectedPlatforms = new Set(cfg.platforms || []);
   kwTags.set(cfg.keywords || []);
   cityTags.set(cfg.cities || []);
@@ -1016,6 +1021,9 @@ function applyConfig(cfg) {
 
 /* 服务端配置保存：单飞 + 合并 —— 避免连续操作/自动保存重叠造成的并发写竞争 */
 let cfgSaveBusy = false;
+// 配置文件里记录的简历文件名：页面加载时先记住服务端的值，
+// 避免简历档案还没拉回来就自动对账保存、把 resume 冲成 null
+let cfgResumeName = null;
 let cfgSaveDirty = false;
 let cfgSaveBody = '';
 
