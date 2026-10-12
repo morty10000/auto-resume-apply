@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -40,6 +41,20 @@ def init_db() -> None:
     """建表（已存在则跳过）+ 轻量迁移。应用启动时调用。"""
     Base.metadata.create_all(engine)
     _migrate()
+
+
+def checkpoint_wal() -> None:
+    """把 WAL 落盘并截断（启动时调用一次）。
+
+    SQLite 的 WAL 只做「回绕」不做「收缩」，长期运行后 app.db-wal 会超过
+    数据库本体（2026-10-12 实测 6.3MB vs 4.6MB）。启动时 TRUNCATE 一次即可
+    把体积降回 0，同时保证关闭/重启时数据全部在主库文件里（失败不影响启动）。
+    """
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:  # noqa: BLE001  维护动作，失败不影响服务启动
+        logging.getLogger(__name__).warning("WAL 检查点失败（已忽略）", exc_info=True)
 
 
 def _migrate() -> None:

@@ -31,6 +31,7 @@ const state = {
   jobs: [],                    // 投递记录行
   lastMatched: [],             // 最近一次匹配通过的岗位（供「仅投递」使用）
   realJobs: [],                // 真实采集记录（来自数据库）
+  realJobsTotal: null,         // 库内岗位总数（/api/jobs 的 X-Total-Count）
   matches: [],                 // 真实匹配记录（来自数据库）
 };
 
@@ -1495,8 +1496,12 @@ const COLLECT_STATUS = {
 
 async function loadRealJobs() {
   try {
-    const rows = await (await fetch('/api/jobs')).json();
+    const r = await fetch('/api/jobs');
+    const rows = await r.json();
     if (Array.isArray(rows)) state.realJobs = rows;
+    // 接口只返回最近 100 条；真实总数由响应头给出，避免「共 100 条」被误读
+    const total = Number(r.headers.get('X-Total-Count'));
+    state.realJobsTotal = Number.isFinite(total) && total > 0 ? total : null;
   } catch { /* 后端异常时保留现有数据 */ }
   renderCollect();
 }
@@ -1516,7 +1521,12 @@ function renderCollect() {
     </tr>`).join('');
   $('#collectEmpty').classList.toggle('hidden', rows.length > 0);
   $('#collectTable').classList.toggle('hidden', rows.length === 0);
-  $('#collectCount').textContent = rows.length ? `共 ${rows.length} 条` : '';
+  const total = state.realJobsTotal;
+  $('#collectCount').textContent = rows.length
+    ? (total && total > rows.length
+        ? `显示最近 ${rows.length} 条 · 库内共 ${total} 条`
+        : `共 ${rows.length} 条`)
+    : '';
 }
 
 /* ---- 匹配记录（真实数据，来自数据库） ---- */

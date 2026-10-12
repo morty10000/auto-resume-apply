@@ -8,9 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.db.database import init_db, session_scope
 from backend.db.models import Job as JobRow
@@ -380,10 +380,18 @@ async def _collect_impl(item: CollectIn) -> dict:
 
 
 @router.get("/api/jobs")
-def list_jobs(limit: int = 100) -> list[dict]:
-    """最近的采集岗位（倒序）。"""
+def list_jobs(limit: int = 100, response: Response = None) -> list[dict]:
+    """最近的采集岗位（倒序）。
+
+    响应头 X-Total-Count 给出库内岗位总数，前端据此显示「显示最近 N 条 / 共 M 条」，
+    避免把「只返回最近 100 条」误读成「一共只采集了 100 条」。
+    """
     init_db()
     with session_scope() as s:
+        total = int(s.execute(select(func.count()).select_from(JobRow)).scalar() or 0)
+        if response is not None:
+            response.headers["X-Total-Count"] = str(total)
+            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
         rows = s.execute(
             select(JobRow).order_by(JobRow.id.desc()).limit(min(max(limit, 1), 500))
         ).scalars().all()
