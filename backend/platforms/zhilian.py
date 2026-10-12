@@ -38,6 +38,25 @@ API_SEARCH = "https://fe-api.zhaopin.com/c/i/search/positions"
 
 AUTH_COOKIE_HINTS = ("at", "rt")
 
+# 详情页是否「已建立沟通」：按钮变「继续沟通」即已投递（弹窗处理后的复核用）
+_APPLIED_PROBE_JS = (
+    "(() => {"
+    "  const btns = [...document.querySelectorAll('button,a,div,span')].filter(b => b.offsetWidth || b.offsetHeight);"
+    "  return btns.some(b => (b.innerText || '').trim() === '继续沟通') ? 'yes' : 'no';"
+    "})()"
+)
+
+# 「屏蔽代招/派遣职位」设置提示框：点最内层「立即关闭」关掉该限制
+_CLOSE_BLOCK_DIALOG_JS = (
+    "(() => {"
+    "  const all = [...document.querySelectorAll('button,a,div,span')]"
+    "    .filter(e => (e.offsetWidth || e.offsetHeight) && (e.innerText || '').trim() === '立即关闭');"
+    "  if (!all.length) return 'no-btn';"
+    "  all[all.length - 1].click();"
+    "  return 'closed';"
+    "})()"
+)
+
 # 城市 → 城市代码（2026-10 从站点 base/data 接口提取）
 CITY_CODES = {
     "北京": "530", "上海": "538", "广州": "763", "深圳": "765", "天津": "531",
@@ -469,7 +488,7 @@ class ZhilianPlatform(BasePlatform):
         )
         res = await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], click_js)
         if res == "already":
-            return ApplyResult(success=True, message="此前已投递（跳过重复投递）")
+            return ApplyResult(success=True, message="此前已投递（跳过重复投递）", duplicate=True)
         if res != "clicked":
             return ApplyResult(success=False, message="未找到「立即投递」按钮")
 
@@ -496,7 +515,30 @@ class ZhilianPlatform(BasePlatform):
         if "已向对方发送" in joined:
             return ApplyResult(success=True, message="已投递（简历 + 招呼语已送达）")
         if any(w in joined for w in ("已经投递", "重复投递", "已投递过")):
-            return ApplyResult(success=True, message="此前已投递（跳过重复投递）")
+            return ApplyResult(success=True, message="此前已投递（跳过重复投递）", duplicate=True)
+        # 「屏蔽代招/派遣职位」拦截（2026-10-12 实测：账号开着该设置时点投递 100% 失败）：
+        # 弹出的是设置提示（取消 / 立即关闭）→ 自动点「立即关闭」关掉该设置，再重试一次投递。
+        if any(w in joined for w in ("屏蔽代招", "代招/派遣", "关闭后才能投递")):
+            applied_js = _APPLIED_PROBE_JS
+            close_js = _CLOSE_BLOCK_DIALOG_JS
+            closed = await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], close_js)
+            if closed == "closed":
+                await task_control.cancellable_sleep(random.uniform(2.0, 3.5))
+                if await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], applied_js) != "yes":
+                    await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], click_js)
+                    await task_control.cancellable_sleep(random.uniform(3.0, 4.5))
+                raw = await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], result_js)
+                texts = []
+                if raw:
+                    try:
+                        texts = json.loads(raw)
+                    except ValueError:
+                        texts = []
+                joined = " ".join(texts)
+                if "已向对方发送" in joined:
+                    return ApplyResult(success=True, message="已投递（自动关闭「屏蔽代招/派遣职位」设置后送达）")
+                if any(w in joined for w in ("已经投递", "重复投递", "已投递过")):
+                    return ApplyResult(success=True, message="此前已投递（跳过重复投递）", duplicate=True)
         # 最终复核：标签页延迟时投递可能刚完成（按钮已变「继续沟通」）
         await task_control.cancellable_sleep(4.0)
         confirm_js = (

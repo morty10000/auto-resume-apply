@@ -552,7 +552,7 @@ class Job51Platform(BasePlatform):
         )
         state = await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], state_js, timeout_s=15)
         if state == "already":
-            return ApplyResult(success=True, message="此前已投递（跳过重复投递）")
+            return ApplyResult(success=True, message="此前已投递（跳过重复投递）", duplicate=True)
         if state != "has-button":
             return ApplyResult(success=False, message="未找到「立即投递」按钮")
 

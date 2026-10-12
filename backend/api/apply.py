@@ -137,6 +137,10 @@ async def _apply_impl(item: ApplyIn) -> dict:
                     JobRow.status == JobStatus.MATCHED,
                     ~msg_col.like("%安全验证%"),
                     ~msg_col.like("%未登录%"),
+                    # 「屏蔽代招/派遣」弹窗已在适配器里自动关闭并重试，
+                    # 历史失败不能算作岗位下线（2026-10-12 修复：曾误跳过 8 个智联岗位）
+                    ~msg_col.like("%屏蔽代招%"),
+                    ~msg_col.like("%代招/派遣%"),
                 )
                 .group_by(AppRow.job_id)
                 .having(func.count() >= 3)
@@ -197,7 +201,7 @@ async def _apply_impl(item: ApplyIn) -> dict:
         f" ｜ 各平台每日上限 {limits_desc}",
     )
     results: list[dict] = []
-    applied = failed = 0
+    applied = failed = duplicated = 0
     need_verify = False
     started = time.time()
     processed = 0
@@ -206,8 +210,8 @@ async def _apply_impl(item: ApplyIn) -> dict:
 
     def _stopped_response() -> dict:
         """手动停止：保留已完成的投递记录后返回。"""
-        hub.update(stats={"applied": applied, "failed": failed})
-        hub.log("WARN", f"投递已手动停止：成功 {applied} 个 · 失败 {failed} 个（已投数据已入库）")
+        hub.update(stats={"applied": applied, "failed": failed, "duplicate": duplicated})
+        hub.log("WARN", f"投递已手动停止：新增 {applied} 个 · 已沟通过 {duplicated} 个 · 失败 {failed} 个（已投数据已入库）")
         hub.end(ok=False, summary=f"投递已手动停止（成功 {applied} · 失败 {failed}）")
         base.update({
             "processed": len(results), "applied": applied, "failed": failed,
@@ -219,13 +223,13 @@ async def _apply_impl(item: ApplyIn) -> dict:
         return base
 
     async def _apply_platform(platform: str) -> None:
-        nonlocal applied, failed, processed, need_verify
+        nonlocal applied, failed, duplicated, processed, need_verify
         if stop or processed >= cap:
             return
         if task_control.is_cancelled():
             return
         await task_control.wait_if_paused()
-        stat = {"ok": True, "applied": 0, "failed": 0, "skipped": 0, "reason": ""}
+        stat = {"ok": True, "applied": 0, "failed": 0, "duplicate": 0, "skipped": 0, "reason": ""}
         by_platform[platform] = stat
         try:
             adapter = get_platform(platform)
@@ -327,25 +331,37 @@ async def _apply_impl(item: ApplyIn) -> dict:
                 r = ApplyResult(success=False, message=f"投递异常（{type(e).__name__}）：{e}")
             now = time.strftime("%Y-%m-%d %H:%M:%S")
 
+            _is_dup = bool(r.success and getattr(r, "duplicate", False))
             with session_scope() as s:
-                s.add(AppRow(job_id=row_id, result="success" if r.success else "fail", message=r.message))
+                s.add(AppRow(
+                    job_id=row_id,
+                    result="duplicate" if _is_dup else ("success" if r.success else "fail"),
+                    message=r.message,
+                ))
                 if r.success:
                     jr = s.get(JobRow, row_id)
                     jr.status = JobStatus.APPLIED
                     jr.applied_at = now
-                    ds = s.execute(
-                        select(DailyStat).where(
-                            DailyStat.date == _today(), DailyStat.platform == platform
-                        )
-                    ).scalar_one_or_none()
-                    if ds is None:
-                        ds = DailyStat(date=_today(), platform=platform, applied=0)
-                        s.add(ds)
-                    ds.applied = int(ds.applied or 0) + 1
+                    # 重复投递（平台侧幂等返回）不消耗每日新增投递名额
+                    if not _is_dup:
+                        ds = s.execute(
+                            select(DailyStat).where(
+                                DailyStat.date == _today(), DailyStat.platform == platform
+                            )
+                        ).scalar_one_or_none()
+                        if ds is None:
+                            ds = DailyStat(date=_today(), platform=platform, applied=0)
+                            s.add(ds)
+                        ds.applied = int(ds.applied or 0) + 1
 
             processed += 1
             platform_done += 1
-            if r.success:
+            if _is_dup:
+                duplicated += 1
+                stat["duplicate"] = int(stat.get("duplicate") or 0) + 1
+                edge_login.note_apply_success(platform)   # 平台确认已沟通过 = 会话有效
+                hub.log("INFO", f"（{processed}/{total}）{display} {job.title} 已沟通过（重复，不计入新增）：{r.message}")
+            elif r.success:
                 applied += 1
                 stat["applied"] += 1
                 remaining -= 1
@@ -363,7 +379,7 @@ async def _apply_impl(item: ApplyIn) -> dict:
             results.append({
                 "job_id": row_id, "title": job.title, "company": job.company,
                 "salary": job.salary, "score": score, "platform": platform,
-                "success": r.success, "message": r.message,
+                "success": r.success, "duplicate": _is_dup, "message": r.message,
             })
             if r.need_verify:
                 need_verify = True
@@ -398,16 +414,17 @@ async def _apply_impl(item: ApplyIn) -> dict:
     if task_control.is_cancelled():
         return _stopped_response()
 
-    hub.update(stats={"applied": applied, "failed": failed})
+    hub.update(stats={"applied": applied, "failed": failed, "duplicate": duplicated})
     hub.update(percent=100)
     verify_note = "（有平台遇验证码已跳过，处理后可续投）" if need_verify else ""
+    dup_note = f" · 已沟通过(重复) {duplicated} 个" if duplicated else ""
     if is_all:
-        hub.end(ok=True, summary=f"全流程完成：投递成功 {applied} 个 · 失败 {failed} 个{verify_note}")
+        hub.end(ok=True, summary=f"全流程完成：新增投递 {applied} 个{dup_note} · 失败 {failed} 个{verify_note}")
     else:
-        hub.end(ok=True, summary=f"投递完成：成功 {applied} 个 · 失败 {failed} 个{verify_note}")
+        hub.end(ok=True, summary=f"投递完成：新增投递 {applied} 个{dup_note} · 失败 {failed} 个{verify_note}")
 
     base.update({
-        "processed": len(results), "applied": applied, "failed": failed,
+        "processed": len(results), "applied": applied, "failed": failed, "duplicate": duplicated,
         "need_verify": need_verify, "results": results,
         "daily_used": sum(_daily_used(p) for p in groups),
         "by_platform": by_platform,
@@ -436,7 +453,8 @@ def list_applications(limit: int = 300) -> dict:
                 "kind": "attempt", "id": a.id, "job_id": a.job_id,
                 "platform": j.platform, "title": j.title, "company": j.company,
                 "salary": j.salary, "city": j.city, "score": j.match_score,
-                "status": "applied" if a.result == "success" else "failed",
+                "status": ("applied" if a.result == "success"
+                           else ("duplicate" if a.result == "duplicate" else "failed")),
                 "message": a.message, "time": a.created_at,
             })
         pending = s.execute(

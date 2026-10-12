@@ -686,7 +686,7 @@ class BossPlatform(BasePlatform):
             except ValueError:
                 state = {}
         if state.get("isFriend") == "true" or (state.get("btnText") or "").strip() == "继续沟通":
-            return ApplyResult(success=True, message="此前已沟通（跳过重复投递）")
+            return ApplyResult(success=True, message="此前已沟通（跳过重复投递）", duplicate=True)
 
         url_path = state.get("dataUrl")
         if not url_path:
@@ -730,7 +730,7 @@ class BossPlatform(BasePlatform):
                 return ApplyResult(success=True, message="已发起沟通（平台默认招呼已送达，自定义招呼语未发出）")
             return ApplyResult(success=True, message="已发起沟通（打招呼）")
         if any(w in message for w in ("已经", "已沟通", "沟通过", "打过招呼")):
-            return ApplyResult(success=True, message=f"此前已沟通（{message}）")
+            return ApplyResult(success=True, message=f"此前已沟通（{message}）", duplicate=True)
         if code == 37 or "异常" in message:
             return ApplyResult(success=False, message=f"触发风控（{message or code}）", need_verify=True)
         return ApplyResult(success=False, message=f"沟通失败（code={code} {message}）")

@@ -567,6 +567,7 @@ tbody tr:hover { background: var(--tint); }
 .status-applied   { color: var(--ok); }
 .status-failed    { color: var(--err); }
 .status-matched   { color: var(--accent-ink); }
+.status-duplicate { color: var(--text-2); }
 .status-collected { color: var(--text-2); }
 .status-skipped   { color: var(--text-3); }
 .status-rejected  { color: var(--text-3); }

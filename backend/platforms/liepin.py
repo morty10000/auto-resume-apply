@@ -469,7 +469,7 @@ class LiepinPlatform(BasePlatform):
         )
         state = await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], state_js, timeout_s=15)
         if state == "applied":
-            return ApplyResult(success=True, message="此前已投递（跳过重复投递）")
+            return ApplyResult(success=True, message="此前已投递（跳过重复投递）", duplicate=True)
         if state == "chat-only":
             # 该岗位无「投简历」，仅支持「聊一聊」：点击后平台会自动发出招呼语
             chat_js = (

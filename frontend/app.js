@@ -1448,7 +1448,7 @@ async function checkLoginStage(platforms) {
 
 /* ===================== 结果表格 / 导出 ===================== */
 
-const STATUS_TEXT = { applied: '已投递', failed: '失败', matched: '待投递', rejected: '已跳过' };
+const STATUS_TEXT = { applied: '已投递', duplicate: '已沟通过', failed: '失败', matched: '待投递', rejected: '已跳过' };
 
 function renderJobs() {
   const st = $('#filterStatus').value;

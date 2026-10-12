@@ -71,6 +71,9 @@ class ApplyResult(BaseModel):
     success: bool
     message: str = ""
     need_verify: bool = False       # 命中验证码/滑块，需人工处理后再继续
+    # 岗位此前已沟通/已投递（平台侧幂等返回）：仍算「无需再处理」，
+    # 但不计入本轮新增投递数，也不消耗每日投递名额。
+    duplicate: bool = False
 
 
 class BasePlatform(ABC):
