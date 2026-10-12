@@ -342,6 +342,18 @@ async def page_network_alive(key: str, target_id: str) -> bool | None:
     return raw == "alive"
 
 
+def close_target(key: str, target_id: str) -> bool:
+    """关闭一个标签页（调试端点 HTTP，无 CDP 挂接）。"""
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port_for(key)}/json/close/{target_id}", timeout=5
+        ):
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def replace_tab(key: str, target_id: str, reopen_url: str) -> bool:
     """关闭僵尸标签页，并用原生转发重开一个（用于网络僵尸化的自愈）。"""
     try:
