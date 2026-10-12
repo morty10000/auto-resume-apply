@@ -54,6 +54,7 @@ class ApplyIn(BaseModel):
     greeting: str | None = None                               # 自定义打招呼语模板
     daily_limit_by_platform: dict[str, int] | None = None     # 每个平台各自的每日上限（优先生效）
     pace_by_platform: dict[str, dict] | None = None           # 每平台节奏方案：{platform: {"apply_delay": [lo, hi]}}
+    platforms: list[str] | None = None                        # 仅投递这些平台（None=全部；按平台精确投递用）
     flow: str = "apply"            # apply=单独投递；all=一键全流程里的投递环节
     flow_label: str = ""           # 任务来源，监控页展示用
 
@@ -157,6 +158,8 @@ async def _apply_impl(item: ApplyIn) -> dict:
         q = select(JobRow).where(JobRow.status == JobStatus.MATCHED)
         if item.job_ids:
             q = q.where(JobRow.id.in_(item.job_ids))
+        if item.platforms:
+            q = q.where(JobRow.platform.in_([str(p) for p in item.platforms]))
         q = q.order_by(JobRow.match_score.desc(), JobRow.id.asc())
         rows = s.execute(q).scalars().all()
         queue = [(r.id, _row_payload(r), r.match_score) for r in rows]

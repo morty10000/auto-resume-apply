@@ -1274,6 +1274,7 @@ async function submitPipeline(cfg, stages) {
   }
   if (stages.includes('apply')) {
     payload.apply = {
+      platforms: cfg.platforms,
       daily_limit: cfg.daily_limit,
       daily_limit_by_platform: cfg.daily_limit_by_platform,
       pace_by_platform: cfg.pace_by_platform,
@@ -1431,7 +1432,7 @@ async function checkLoginStage(platforms) {
       const names = missing.map(n => PLATFORM_DISPLAY[n] || n).join('、');
       setFlowSub('auth', `已登录 ${okCount}/${selected.length} · 未登录：${names}`);
       logWarn(`登录检查：${names} 未登录 —— 执行到该平台时会自动跳过（可到主页平台卡片点「去登录」）`);
-      if (okCount === 0) toast('所选平台均未登录，运行时会全部跳过 —— 请先点「去登录」', 'warn');
+      toast(`${names} 未登录，运行时将自动跳过该平台 —— 请在主页卡片点「去登录」`, 'warn');
     } else {
       setFlowSub('auth', `已登录 ${okCount}/${selected.length}`);
       logOk('登录检查：所选平台全部已登录');
