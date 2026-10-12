@@ -26,7 +26,10 @@ router = APIRouter(tags=["match"])
 PROFILE_PATH = RESUMES_DIR / "profile.json"
 
 # 参与打分的状态（已投递 / 投递失败的岗位不再重新匹配）
-_MATCHABLE = (JobStatus.COLLECTED, JobStatus.MATCHED, JobStatus.REJECTED, JobStatus.SKIPPED)
+# 注意：SKIPPED 不在其中 —— 它只由投递阶段的「疑似下线」自动保护产生，
+# 若参与重匹配会被立刻复活，保护形同虚设（2026-10-12 修正）。
+# 需要重新尝试时，走「投递记录」页的单条重试（显式指定 job_ids，不受此限制）。
+_MATCHABLE = (JobStatus.COLLECTED, JobStatus.MATCHED, JobStatus.REJECTED)
 
 
 class MatchIn(BaseModel):

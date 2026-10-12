@@ -159,9 +159,13 @@ async def _apply_impl(item: ApplyIn) -> dict:
             )
 
     with session_scope() as s:
-        q = select(JobRow).where(JobRow.status == JobStatus.MATCHED)
+        q = select(JobRow)
         if item.job_ids:
-            q = q.where(JobRow.id.in_(item.job_ids))
+            # 显式单条投递 / 重试：不受队列状态限制（含被自动跳过的 skipped），
+            # 只有已投递的岗位才排除，避免重复跑（2026-10-12 修正）
+            q = q.where(JobRow.id.in_(item.job_ids), JobRow.status != JobStatus.APPLIED)
+        else:
+            q = q.where(JobRow.status == JobStatus.MATCHED)
         if item.platforms:
             q = q.where(JobRow.platform.in_([str(p) for p in item.platforms]))
         q = q.order_by(JobRow.match_score.desc(), JobRow.id.asc())

@@ -1488,7 +1488,7 @@ const COLLECT_STATUS = {
   collected: '已采集',
   matched: '已匹配',
   rejected: '未过筛',
-  skipped: '未过筛',
+  skipped: '已跳过',
   applied: '已投递',
   failed: '投递失败',
 };
