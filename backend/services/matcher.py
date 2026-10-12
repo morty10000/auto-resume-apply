@@ -1,6 +1,6 @@
 """岗位匹配引擎（计划书 3.5）。
 
-第一层：硬过滤（城市 / 学历 / 经验 / 标题黑名单）—— 命中直接淘汰
+第一层：硬过滤（城市 / 学历 / 经验 / 标题+正文黑名单）—— 命中直接淘汰
 第二层：软评分 0-100：
     score = 40 × 技能覆盖率 + 30 × 职位名称相似度 + 15 × 薪资匹配度 + 加分项(≤15)
 
@@ -203,10 +203,16 @@ def _hard_filter(job: dict, resume: dict, cfg: dict) -> list[str]:
         reasons.append(f"经验要求过高（要求{extra.get('experience')}）")
 
     title = str(job.get("title") or "")
+    body = str(job.get("description") or "")
     for w in cfg.get("blacklist") or []:
         w = str(w).strip()
-        if w and w in title:
+        if not w:
+            continue
+        if w in title:
             reasons.append(f"标题含“{w}”")
+            break
+        if w in body:
+            reasons.append(f"正文含“{w}”")
             break
     return reasons
 

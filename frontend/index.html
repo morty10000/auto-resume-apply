@@ -152,12 +152,13 @@
           <label>HR活跃度（太久不活跃直接过滤）</label>
           <select id="hrActive">
             <option value="">不限</option>
+            <option value="0">今日活跃</option>
             <option value="3">3 天内活跃</option>
             <option value="7">7 天内活跃</option>
             <option value="14">14 天内活跃</option>
             <option value="30">30 天内活跃</option>
           </select>
-          <div class="hint">猎聘/智联取接口活跃文案；Boss/51job 优先取头像旁活跃标签（如「今日活跃」「本周搜人才」），取不到时按在线状态；无法判定的岗位不拦截</div>
+          <div class="hint">今日活跃（最严格）=只保留今天有在线/回复/活跃信号的岗位，无法判定的一律拦截；3/7/14/30 天内活跃=无法判定时不拦截；猎聘/智联取接口活跃文案，Boss/51job 优先取头像旁活跃标签</div>
         </div>
         <div class="form-item">
           <label>抓取页数 / 关键词</label>
@@ -228,7 +229,7 @@
           </div>
         </div>
         <div class="form-item span2">
-          <label>标题黑名单（可选；标题命中即淘汰）</label>
+          <label>关键词黑名单（可选；标题或正文命中即淘汰）</label>
           <div id="blacklistTags" class="tag-input"><input id="blacklistInput" placeholder="输入后回车添加，如：外包、驻场"></div>
           <div class="hint">支持一次输入 / 粘贴多个：逗号（,，）、顿号（、）、分号（;；）、空格、换行均可分隔；自动去重；点标签上的 × 删除</div>
         </div>
@@ -240,7 +241,7 @@
       <h2>评分说明</h2>
       <p class="hint">① 技能覆盖 40%：简历技能 ∩ 岗位要求技能 ÷ 岗位要求技能数（权重最高）；</p>
       <p class="hint">② 职位名称相似 30% ｜ 薪资区间匹配 15% ｜ HR活跃 / 福利 / 企业信息加分 15%；</p>
-      <p class="hint">③ 硬过滤：城市 / 学历 / 经验 / 标题黑名单，命中直接淘汰（不参与分数排名）；</p>
+      <p class="hint">③ 硬过滤：城市 / 学历 / 经验 / 标题+正文黑名单，命中直接淘汰（不参与分数排名）；</p>
       <p class="hint">④ 阈值越高投递越精准，越低覆盖面越广；匹配明细可在「匹配记录」页点击行展开。</p>
     </div>
   </section>

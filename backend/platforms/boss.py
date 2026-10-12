@@ -62,16 +62,21 @@ SELECTORS: dict[str, str] = {
 _ACTIVE_LABELS_JS = (
     "(() => {"
     "  const out = [];"
-    "  for (const el of document.querySelectorAll('.boss-active-time')) {"
-    "    const label = (el.innerText || '').trim().slice(0, 20);"
-    "    if (!label) continue;"
-    "    const card = el.closest('.job-detail-box') || el.closest('[class*=job-detail-container]') || el.closest('[class*=job-card]');"
-    "    let title = null;"
-    "    if (card) {"
-    "      const t = card.querySelector('.job-name') || card.querySelector('[class*=job-name]');"
-    "      title = t ? (t.innerText || '').trim().replace(/\\s+/g, '') : null;"
-    "    }"
-    "    if (title) out.push({ title: title, label: label });"
+    "  const seen = new Set();"
+    "  const sel = '.boss-active-time, [class*=active-time], [class*=boss-active], .job-boss-info [class*=active]';"
+    "  const reAct = /活跃|在线|回复|今日|刚刚|搜人才|天|周|月|小时|分钟/;"
+    "  for (const el of document.querySelectorAll(sel)) {"
+    "    const label = (el.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 24);"
+    "    if (!label || !reAct.test(label)) continue;"
+    "    const card = el.closest('li.job-card-box') || el.closest('[class*=job-card]') || el.closest('.job-detail-box') || el.closest('[class*=job-detail]');"
+    "    if (!card) continue;"
+    "    const a = card.querySelector('a[href*=\"/job_detail/\"]');"
+    "    const t = card.querySelector('.job-name') || card.querySelector('[class*=job-name]') || a;"
+    "    const title = t ? (t.innerText || '').trim().replace(/\\s+/g, '') : null;"
+    "    const id = a ? (a.getAttribute('href') || '').split('/').filter(Boolean).pop().split('.')[0] : null;"
+    "    if (!title || !id || seen.has(id)) continue;"
+    "    seen.add(id);"
+    "    out.push({ id: id, title: title, label: label });"
     "  }"
     "  return JSON.stringify(out);"
     "})()"
@@ -183,7 +188,7 @@ class BossPlatform(BasePlatform):
         return await edge_login.check_platform_login(PLATFORM_NAME)
 
     async def _extract_active_labels(self, tab: dict) -> dict[str, str]:
-        """从当前搜索页 DOM 提取「标题 → 头像旁活跃标签」（失败静默返回空表）。"""
+        """从当前搜索页 DOM 提取「岗位ID → 头像旁活跃标签」（失败静默返回空表）。"""
         raw = await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], _ACTIVE_LABELS_JS)
         if not raw:
             return {}
@@ -193,9 +198,13 @@ class BossPlatform(BasePlatform):
             return {}
         out: dict[str, str] = {}
         for x in arr or []:
-            t, lb = x.get("title"), x.get("label")
-            if t and lb:
-                out[str(t)] = str(lb)
+            jid, t, lb = x.get("id"), x.get("title"), x.get("label")
+            if not lb:
+                continue
+            if jid:
+                out[str(jid)] = str(lb)
+            if t:
+                out.setdefault(_norm_title(t), str(lb))
         return out
 
     # ------------------------------------------------------------ 采集
@@ -310,6 +319,10 @@ class BossPlatform(BasePlatform):
         city = "·".join(
             x for x in [it.get("cityName"), it.get("areaDistrict"), it.get("businessDistrict")] if x
         ) or None
+        active_text = (
+            it.get("activeTimeDesc") or it.get("bossActiveTimeDesc")
+            or it.get("bossActiveTime") or it.get("activeTime") or ""
+        )
         return Job(
             platform=PLATFORM_NAME,
             platform_job_id=job_id,
@@ -331,8 +344,11 @@ class BossPlatform(BasePlatform):
                 "brand_stage": it.get("brandStageName"),
                 "brand_industry": it.get("brandIndustry"),
                 "brand_scale": it.get("brandScaleName"),
-                "hr_active_desc": "在线" if it.get("bossOnline") else None,
-                "hr_active_days": 0 if it.get("bossOnline") else None,
+                "hr_active_desc": active_text or ("在线" if it.get("bossOnline") else None),
+                "hr_active_days": (
+                    parse_active_days(active_text) if active_text
+                    else (0 if it.get("bossOnline") else None)
+                ),
             },
         )
 
@@ -444,7 +460,7 @@ class BossPlatform(BasePlatform):
                         job = self._parse_api_job(it)
                         if job is None:
                             continue
-                        _lbl = active_map.get(_norm_title(job.title))
+                        _lbl = active_map.get(job.platform_job_id) or active_map.get(_norm_title(job.title))
                         if _lbl:
                             job.extra["hr_active_desc"] = _lbl
                             job.extra["hr_active_days"] = parse_active_days(_lbl)

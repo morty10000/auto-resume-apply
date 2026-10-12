@@ -74,24 +74,21 @@ def _build_search_js(keyword: str, city_code: str, page_index: int) -> str:
 _ACTIVE_LABELS_JS = (
     "(() => {"
     "  const out = [];"
-    "  const reAct = /活跃|在线|回复|搜人才|面试邀请|分钟前/;"
-    "  for (const el of document.querySelectorAll('[class*=joblist-item-jobinfo]')) {"
-    "    const raw = (el.innerText || '').trim().replace(/\\s+/g, ' ');"
-    "    if (!raw || raw.length > 40) continue;"
-    "    const frags = raw.split(' ').filter(x => reAct.test(x));"
-    "    if (!frags.length) continue;"
-    "    const label = frags.join(' ').slice(0, 24);"
-    "    let root = null, n = el;"
-    "    for (let i = 0; i < 6 && n; i++) {"
-    "      n = n.parentElement; if (!n) break;"
-    "      if (n.querySelector('a[href*=\"jobs.51job.com\"]')) { root = n; break; }"
-    "    }"
-    "    let title = null;"
-    "    if (root) {"
-    "      const a = root.querySelector('.jname') || root.querySelector('[class*=jname]') || root.querySelector('a[href*=\"jobs.51job.com\"]');"
-    "      title = a ? (a.innerText || '').trim().replace(/\\s+/g, '') : null;"
-    "    }"
-    "    if (title) out.push({ title: title, label: label });"
+    "  const seen = new Set();"
+    "  const reAct = /(今日|刚刚|[0-9]+(?:天|周|月|小时|分钟)?(?:前|内)?)(?:活跃|在线|回复|搜人才|面试邀请)/;"
+    "  for (const a of document.querySelectorAll('a[href*=\"jobs.51job.com\"]')) {"
+    "    const href = a.getAttribute('href') || '';"
+    "    const id = href.split('/').filter(Boolean).pop().split('.')[0];"
+    "    if (!id || !/^\\d+$/.test(id) || seen.has(id)) continue;"
+    "    const card = a.closest('[class*=joblist]') || a.closest('.j_joblist .j_job') || a.closest('[class*=job-item]') || a.closest('div');"
+    "    if (!card) continue;"
+    "    const txt = (card.innerText || '').replace(/\\s+/g, ' ');"
+    "    const m = txt.match(reAct);"
+    "    if (!m) continue;"
+    "    const title = (a.innerText || '').trim().replace(/\\s+/g, '');"
+    "    if (!title) continue;"
+    "    seen.add(id);"
+    "    out.push({ id: id, title: title, label: m[0].slice(0, 24) });"
     "  }"
     "  return JSON.stringify(out.slice(0, 60));"
     "})()"
@@ -137,6 +134,7 @@ def _parse_api_job(it: dict) -> Job | None:
     )
     exp, deg, skills, welfare = _split_tags(it.get("jobTags") or [])
     detail = it.get("jobAreaLevelDetail") or {}
+    active_text = it.get("hrActiveTime") or it.get("activeTimeDesc") or it.get("bossActiveTime") or ""
     return Job(
         platform=PLATFORM_NAME,
         platform_job_id=str(job_id),
@@ -158,8 +156,11 @@ def _parse_api_job(it: dict) -> Job | None:
             "brand_industry": it.get("companyIndustryType1Str") or it.get("industryType1Str"),
             "brand_scale": it.get("companySizeString"),
             "brand_stage": "",
-            "hr_active_desc": "在线" if (it.get("hrIsOnline") or it.get("isOnline")) else None,
-            "hr_active_days": 0 if (it.get("hrIsOnline") or it.get("isOnline")) else None,
+            "hr_active_desc": active_text or ("在线" if (it.get("hrIsOnline") or it.get("isOnline")) else None),
+            "hr_active_days": (
+                parse_active_days(active_text) if active_text
+                else (0 if (it.get("hrIsOnline") or it.get("isOnline")) else None)
+            ),
             "publish_time": it.get("issueDateString") or it.get("updateDateTime"),
         },
     )
@@ -224,7 +225,7 @@ class Job51Platform(BasePlatform):
         return False
 
     async def _extract_active_labels(self, tab: dict) -> dict[str, str]:
-        """从当前搜索页 DOM 提取「标题 → 头像旁活跃标签」（失败静默返回空表）。"""
+        """从当前搜索页 DOM 提取「岗位ID → 头像旁活跃标签」（失败静默返回空表）。"""
         raw = await browser.raw_evaluate(browser.SYSTEM_KEY, tab["id"], _ACTIVE_LABELS_JS)
         if not raw:
             return {}
@@ -234,9 +235,13 @@ class Job51Platform(BasePlatform):
             return {}
         out: dict[str, str] = {}
         for x in arr or []:
-            t, lb = x.get("title"), x.get("label")
-            if t and lb:
-                out[str(t)] = str(lb)
+            jid, t, lb = x.get("id"), x.get("title"), x.get("label")
+            if not lb:
+                continue
+            if jid:
+                out[str(jid)] = str(lb)
+            if t:
+                out.setdefault(_norm_title(t), str(lb))
         return out
 
     # ------------------------------------------------------------ 采集
@@ -372,7 +377,7 @@ class Job51Platform(BasePlatform):
                         job = _parse_api_job(it)
                         if job is None:
                             continue
-                        _lbl = active_map.get(_norm_title(job.title))
+                        _lbl = active_map.get(job.platform_job_id) or active_map.get(_norm_title(job.title))
                         if _lbl:
                             job.extra["hr_active_desc"] = _lbl
                             job.extra["hr_active_days"] = parse_active_days(_lbl)

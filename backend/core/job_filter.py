@@ -82,6 +82,9 @@ def parse_active_days(text: str | None) -> int | None:
     m = re.search(r"(\d+)\s*周", s)
     if m:
         return int(m.group(1)) * 7
+    m = re.search(r"(\d+)\s*小时前", s)
+    if m:
+        return 1 if int(m.group(1)) >= 24 else 0
     m = re.search(r"(\d+)\s*[天日]", s)
     if m:
         return int(m.group(1))
@@ -169,10 +172,16 @@ def passes_filters(job: Job, keyword: str, query: JobQuery, check_keyword: bool 
         if deg not in _UNLIMITED and deg not in set(query.education):
             return False
 
-    # ---- HR 活跃度：超过阈值即过滤（信息缺失不拦截） ----
+    # ---- HR 活跃度过滤 ----
+    # 今日活跃(0)：最严格档，只保留有明确「今日」信号的岗位（在线/今日活跃/刚刚活跃等），
+    # 无法判定的一律拦下，专用于避开长期不活跃 HR。
+    # X 天内活跃(>0)：信息缺失不拦，仅对有明确天数且超过阈值的岗位拦截。
     if query.hr_active_days is not None:
         days = (job.extra or {}).get("hr_active_days")
-        if isinstance(days, int) and days > query.hr_active_days:
+        if query.hr_active_days == 0:
+            if days != 0:
+                return False
+        elif isinstance(days, int) and days > query.hr_active_days:
             return False
 
     return True
