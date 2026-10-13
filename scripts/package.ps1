@@ -78,6 +78,10 @@ $required = @(
     "$folderName/frontend/app.js",
     "$folderName/frontend/themes/dark.css",
     "$folderName/scripts/open_ui.py",
+    "$folderName/scripts/browser_launcher.cmd",
+    "$folderName/scripts/install_browser_shortcut.ps1",
+    "$folderName/安装浏览器快捷方式.bat",
+    "$folderName/启动看板.url",
     "$folderName/使用说明.md"
 )
 $missing = @($required | Where-Object { $names -notcontains $_ })

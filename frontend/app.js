@@ -333,6 +333,7 @@ async function restoreTaskState() {
     (s.logs || []).forEach(l => { taskPoll.lastLogSeq = Math.max(taskPoll.lastLogSeq, l.seq); });
   }
   if (busy) {
+    switchTab('monitor');
     taskPoll.wasActive = true;
     taskPoll.doneHandled = false;
     Object.assign(state.run.stats, s.stats || {});
@@ -1383,6 +1384,7 @@ async function beginRun(cfg, label, kind = 'all') {
   taskPoll.wasActive = false;
   taskPoll.doneHandled = false;
   startTaskPoll();
+  switchTab('monitor');
   logOk('任务已提交到服务端 —— 阶段接力由服务端自驱，可随时停止；刷新 / 关闭页面不影响运行');
 }
 

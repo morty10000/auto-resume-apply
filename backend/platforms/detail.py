@@ -68,7 +68,7 @@ async def ensure_detail_tab(domain: str, exclude_id: str, first_url: str) -> dic
     tab = _find_tab(domain, exclude_id)
     if tab is not None:
         return tab
-    browser.forward_open(browser.SYSTEM_KEY, first_url)
+    await browser.open_background_tab(browser.SYSTEM_KEY, first_url)
     for _ in range(20):
         task_control.raise_if_cancelled()
         await task_control.cancellable_sleep(0.8)

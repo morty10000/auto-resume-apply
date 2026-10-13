@@ -211,6 +211,43 @@ def forward_open(key: str, url: str) -> bool:
         return False
 
 
+async def open_background_tab(key: str, url: str, timeout_s: float = 15.0) -> bool:
+    """在后台新建原生标签页，不抢当前页面焦点（不建立页面级 CDP 会话）。
+
+    采集 / 正文 / 投递页统一走这里，用户前台可一直停留在项目监控页；
+    登录与验证码仍由各自逻辑显式切到前台。
+    """
+    try:
+        if not is_running(key):
+            ok, _ = await ensure_running_async(key, UI_URL)
+            if not ok:
+                return False
+        ws_url = _browser_ws_url(key)
+        if not ws_url:
+            return False
+        async with websockets.connect(ws_url, max_size=16 * 1024 * 1024) as ws:
+            await ws.send(json.dumps({
+                "id": 1,
+                "method": "Target.createTarget",
+                "params": {"url": url, "background": True, "forTab": True},
+            }))
+            deadline = time.time() + timeout_s
+            while time.time() < deadline:
+                wait_s = max(0.5, deadline - time.time())
+                try:
+                    reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=wait_s))
+                except asyncio.TimeoutError:
+                    break
+                if reply.get("id") != 1:
+                    continue
+                if reply.get("error"):
+                    return False
+                return bool((reply.get("result") or {}).get("targetId"))
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def is_ui_url(url: str) -> bool:
     """判断 URL 是否为本项目前端界面。"""
     u = url or ""

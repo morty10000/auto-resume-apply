@@ -218,7 +218,7 @@ class BossPlatform(BasePlatform):
         tab = await self._find_fetch_tab()
         if tab is not None:
             return tab
-        browser.forward_open(browser.SYSTEM_KEY, first_url)
+        await browser.open_background_tab(browser.SYSTEM_KEY, first_url)
         for _ in range(20):
             task_control.raise_if_cancelled()
             await task_control.cancellable_sleep(0.8)
@@ -571,7 +571,7 @@ class BossPlatform(BasePlatform):
         """复用 zhipin 标签；没有则原生转发打开（等同手动点 +）。"""
         tab = await self._find_apply_tab()
         if tab is None:
-            browser.forward_open(browser.SYSTEM_KEY, url)
+            await browser.open_background_tab(browser.SYSTEM_KEY, url)
             for _ in range(20):
                 await task_control.cancellable_sleep(0.8)
                 tab = await self._find_apply_tab()
