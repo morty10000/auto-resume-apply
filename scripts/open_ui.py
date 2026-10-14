@@ -23,7 +23,9 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-LOG_PATH = PROJECT_ROOT / "data" / "startup.log"
+from backend.core.paths import DATA_DIR  # noqa: E402
+
+LOG_PATH = DATA_DIR / "startup.log"
 
 
 def _init_log() -> None:

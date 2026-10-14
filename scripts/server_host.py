@@ -9,8 +9,11 @@ import traceback
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LOG_PATH = PROJECT_ROOT / "data" / "server_console.log"
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.core.paths import DATA_DIR  # noqa: E402
+
+LOG_PATH = DATA_DIR / "server_console.log"
 
 
 def _init_log() -> None:
