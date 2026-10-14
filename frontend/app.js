@@ -376,8 +376,8 @@ function switchTab(name) {
 
 /* ===================== 平台卡片 ===================== */
 
-// 对外只展示两个状态：未登录 / 已登录（waiting 等中间态一律按「未登录」显示）
-const LOGIN_TEXT = { logged_in: '已登录' };
+// 登录态与验证态分开：有登录 cookie 但被安全验证拦截时，不能再显示绿灯。
+const LOGIN_TEXT = { logged_in: '已登录', verify_required: '需验证' };
 
 function renderPlatforms() {
   const box = $('#platformList');
@@ -386,8 +386,12 @@ function renderPlatforms() {
     const info = state.platformStatus[p.name] || {};
     const st = info.status || 'unknown';
     const logged = st === 'logged_in';
-    const dotCls = logged ? 'on' : 'off';
-    const foot = logged
+    const verifyRequired = st === 'verify_required';
+    const dotCls = verifyRequired ? 'verify' : (logged ? 'on' : 'off');
+    const statusText = LOGIN_TEXT[st] || '未登录';
+    const foot = verifyRequired
+      ? `<button type="button" class="btn btn-ghost btn-sm" data-login="${p.name}" data-force="1" title="处理验证码后重新登录，恢复该平台的运行状态">处理验证</button>`
+      : logged
       ? `<button type="button" class="btn btn-ghost btn-sm" data-login="${p.name}" data-force="1" title="清掉本浏览器里的旧登录状态，重新打开登录页">重新登录</button>`
       : `<button type="button" class="btn btn-ghost btn-sm" data-login="${p.name}">去登录</button>`;
     // 状态新鲜度提示：最近检测时间 / Edge 未启动说明 / 失效原因
@@ -396,6 +400,8 @@ function renderPlatforms() {
       hint = info.edge_running === false
         ? '专用 Edge 未启动，状态未实时验证'
         : (info.checked_at ? `最近检测 ${esc(info.checked_at)}` : '状态待检测');
+    } else if (verifyRequired) {
+      hint = info.message ? esc(info.message) : '平台需要安全验证，请处理后重新登录';
     } else {
       hint = info.message ? esc(info.message) : (info.checked_at ? `最近检测 ${esc(info.checked_at)}` : '');
     }
@@ -416,7 +422,7 @@ function renderPlatforms() {
         <div class="pc-head"><span class="check"></span><span class="pc-name">${p.display}</span></div>
         <div class="pc-foot">
           <span class="status-dot dot-${dotCls}"></span>
-          <span>${logged ? '已登录' : '未登录'}</span>
+          <span>${statusText}</span>
           ${foot}
         </div>
         ${hint ? `<div class="pc-hint">${hint}</div>` : ''}
@@ -881,6 +887,67 @@ function createTagInput(container, input, onChange, opts = {}) {
 }
 
 let kwTags, cityTags, blTags;
+let companyCommonTags;
+const companyPlatformTags = new Map();
+
+const COMPANY_BLOCK_PRESETS = {
+  common: [
+    '软通动力|iSoftStone', '中软国际', '外企德科|FESCO Adecco', '法本|法本信息',
+    '博彦科技|Beyondsoft', '文思海辉|Pactera', '柯莱特', '中电金信', '慧博云通',
+    '赛意信息', '科锐国际|科锐尔', '任仕达|Randstad', '万宝盛华|Manpower',
+  ],
+  boss: ['德科', '软通', '中软', '法本', '博彦', '文思海辉', '中电金信', '人力资源', '劳务'],
+  zhilian: ['人力资源服务', '人才顾问', '劳务派遣', '人才服务', '服务外包', '代招'],
+  job51: ['人力资源', '劳务', '派遣', '外包', '人才服务', '代招'],
+  liepin: ['人力资源', '劳务派遣', '外包', '派遣', '驻场', 'Outsourcing', 'Staffing'],
+};
+
+const COMPANY_BLOCK_PLACEHOLDERS = {
+  boss: '如：软通动力、法本、外企德科',
+  zhilian: '如：人力资源服务、劳务派遣、代招',
+  job51: '如：人才服务、派遣、外包',
+  liepin: '如：人力资源、驻场、Outsourcing',
+};
+
+function mergeCompanyPreset(tags, values) {
+  const current = new Set(tags.get());
+  values.forEach(v => { if (!current.has(v)) tags.add(v); });
+}
+
+function initCompanyBlock() {
+  companyCommonTags = createTagInput(
+    $('#companyCommonTags'), $('#companyCommonInput'), () => scheduleDraftSave(),
+    { splitter: /[,，、;；\s]+/ },
+  );
+  const grid = $('#companyPlatformGrid');
+  grid.innerHTML = PLATFORMS.map(p => `
+    <div class="company-block-item">
+      <div class="company-block-title">
+        <span>${esc(p.display)} 专属追加</span>
+        <button type="button" class="btn btn-ghost btn-sm" data-company-preset="${p.name}">推荐</button>
+      </div>
+      <div id="companyBlockTags-${p.name}" class="tag-input">
+        <input id="companyBlockInput-${p.name}" placeholder="${esc(COMPANY_BLOCK_PLACEHOLDERS[p.name] || '输入公司名片段')}">
+      </div>
+    </div>`).join('');
+  PLATFORMS.forEach(p => {
+    companyPlatformTags.set(p.name, createTagInput(
+      $(`#companyBlockTags-${p.name}`), $(`#companyBlockInput-${p.name}`), () => scheduleDraftSave(),
+      { splitter: /[,，、;；\s]+/ },
+    ));
+  });
+  $('#btnCompanyCommonPreset').addEventListener('click', () => {
+    mergeCompanyPreset(companyCommonTags, COMPANY_BLOCK_PRESETS.common);
+    scheduleDraftSave();
+  });
+  grid.addEventListener('click', e => {
+    const b = e.target.closest('[data-company-preset]');
+    if (!b) return;
+    const tags = companyPlatformTags.get(b.dataset.companyPreset);
+    if (tags) mergeCompanyPreset(tags, COMPANY_BLOCK_PRESETS[b.dataset.companyPreset] || []);
+    scheduleDraftSave();
+  });
+}
 
 /* ---- 搜索方式（逐个 / 组合） ---- */
 
@@ -961,6 +1028,10 @@ function collectConfig() {
     experience: [...expSelected],
     education: [...eduSelected],
     hr_active_days: numOrNull($('#hrActive').value),
+    company_blacklist: companyCommonTags ? companyCommonTags.get() : [],
+    company_blacklist_by_platform: Object.fromEntries(
+      PLATFORMS.map(p => [p.name, companyPlatformTags.get(p.name)?.get() || []])
+    ),
     max_pages: clampInt($('#maxPages').value, 1, 50, 5),
     max_jobs_by_platform: maxJobsByPlatform,
     max_pages_by_platform: paceCfg.pages,
@@ -999,6 +1070,16 @@ function applyConfig(cfg) {
   (Array.isArray(cfg.education) ? cfg.education : cfg.education ? [cfg.education] : []).forEach(v => eduSelected.add(v));
   renderChipGroup('#educationChips', EDUCATION_OPTIONS, eduSelected);
   $('#hrActive').value = cfg.hr_active_days == null ? '' : String(cfg.hr_active_days);
+  if (companyCommonTags) {
+    companyCommonTags.set(cfg.company_blacklist ?? COMPANY_BLOCK_PRESETS.common);
+    PLATFORMS.forEach(p => {
+      const tags = companyPlatformTags.get(p.name);
+      if (tags) {
+        const stored = (cfg.company_blacklist_by_platform || {})[p.name];
+        tags.set(stored ?? (COMPANY_BLOCK_PRESETS[p.name] || []));
+      }
+    });
+  }
   $('#maxPages').value = cfg.max_pages ?? 5;
   writePlatformLimits('maxJobs', cfg.max_jobs_by_platform || {}, cfg.max_jobs ?? 20, 1, 1000);
   writePaceConfig(cfg.pace_by_platform, cfg.max_pages_by_platform, cfg.verify_body_by_platform);
@@ -1263,6 +1344,8 @@ async function submitPipeline(cfg, stages) {
       experience: cfg.experience,
       education: cfg.education,
       hr_active_days: cfg.hr_active_days,
+      company_blacklist: cfg.company_blacklist,
+      company_blacklist_by_platform: cfg.company_blacklist_by_platform,
       kw_delay_min: cfg.kw_delay_min,
       kw_delay_max: cfg.kw_delay_max,
       page_delay_min: cfg.page_delay_min,
@@ -1291,6 +1374,8 @@ async function submitPipeline(cfg, stages) {
       delay_min: cfg.delay_min,
       delay_max: cfg.delay_max,
       greeting: cfg.greeting,
+      company_blacklist: cfg.company_blacklist,
+      company_blacklist_by_platform: cfg.company_blacklist_by_platform,
       flow_label: state.run.label || '',
     };
   }
@@ -1438,12 +1523,21 @@ async function checkLoginStage(platforms) {
     const list = await resp.json();
     const by = new Map((Array.isArray(list) ? list : []).map(p => [p.name, p]));
     const missing = selected.filter(n => (by.get(n) || {}).status !== 'logged_in');
+    const verifyNames = missing
+      .filter(n => (by.get(n) || {}).status === 'verify_required')
+      .map(n => PLATFORM_DISPLAY[n] || n);
+    const loginNames = missing
+      .filter(n => (by.get(n) || {}).status !== 'verify_required')
+      .map(n => PLATFORM_DISPLAY[n] || n);
     const okCount = selected.length - missing.length;
     if (missing.length) {
-      const names = missing.map(n => PLATFORM_DISPLAY[n] || n).join('、');
-      setFlowSub('auth', `已登录 ${okCount}/${selected.length} · 未登录：${names}`);
-      logWarn(`登录检查：${names} 未登录 —— 执行到该平台时会自动跳过（可到主页平台卡片点「去登录」）`);
-      toast(`${names} 未登录，运行时将自动跳过该平台 —— 请在主页卡片点「去登录」`, 'warn');
+      const details = [
+        verifyNames.length ? `需验证：${verifyNames.join('、')}` : '',
+        loginNames.length ? `未登录：${loginNames.join('、')}` : '',
+      ].filter(Boolean).join('；');
+      setFlowSub('auth', `已可用 ${okCount}/${selected.length} · ${details}`);
+      logWarn(`登录检查：${details} —— 执行到这些平台时会自动跳过（请到主页平台卡片处理）`);
+      toast(`${details}，运行时将自动跳过对应平台`, 'warn');
     } else {
       setFlowSub('auth', `已登录 ${okCount}/${selected.length}`);
       logOk('登录检查：所选平台全部已登录');
@@ -1774,6 +1868,7 @@ function init() {
 
   renderPlatformLimits();   // 每平台 采集/投递 数量输入框（必须在 loadConfig 之前渲染）
   renderPaceGrid();         // 防风控方案（按平台差异化节奏）
+  initCompanyBlock();       // 公司屏蔽：通用名单 + 四平台专属追加名单
   loadConfig();
   refreshPlatformStatus();
   // 登录状态自动刷新：平时每 15 秒 + 切回页面时（纯本机请求，零平台接触）——

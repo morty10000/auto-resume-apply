@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # 仅用于类型标注，避免与 platforms 包循环导入
@@ -122,6 +123,57 @@ EXPERIENCE_MAP: dict[str, set[str]] = {
 _UNLIMITED = {"经验不限", "学历不限", "不限", ""}
 
 
+def _norm_company_name(text: str | None) -> str:
+    """公司名归一化：全角转半角、去空白和常见符号，尽量消除全称/简称格式差异。"""
+    s = unicodedata.normalize("NFKC", str(text or "")).lower()
+    return re.sub(r"[\s\-—_·,，.。()（）\[\]【】/\\|]+", "", s)
+
+
+def _company_candidates(company: str | None, extra: dict | None) -> list[str]:
+    """公司名候选：主名称 + 平台适配器提供的简称/全称/英文别名字段。"""
+    extra = extra or {}
+    values: list[str] = [str(company or "")]
+    for key in ("company_aliases", "company_short_name", "company_full_name", "brand_name"):
+        value = extra.get(key)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(str(x) for x in value if x)
+        elif value:
+            values.append(str(value))
+    return [v for v in values if v.strip()]
+
+
+def company_block_reason(
+    company: str | None,
+    platform: str,
+    extra: dict | None = None,
+    common: list[str] | None = None,
+    by_platform: dict[str, list[str]] | None = None,
+) -> str | None:
+    """命中公司屏蔽时返回原因，否则返回 None。
+
+    平台差异通过 by_platform 追加名单处理；适配器可在 extra.company_aliases
+    中提供简称/全称/英文名，避免 Boss 品牌名与智联/51job 法定全称漏匹配。
+    """
+    entries = list(common or []) + list((by_platform or {}).get(platform) or [])
+    if not entries:
+        return None
+    candidates = [_norm_company_name(v) for v in _company_candidates(company, extra)]
+    candidates = [v for v in candidates if v]
+    for raw_entry in entries:
+        for raw_alias in re.split(r"[|｜]", str(raw_entry or "")):
+            raw_alias = raw_alias.strip()
+            if not raw_alias:
+                continue
+            exact = raw_alias.startswith("=")
+            needle = _norm_company_name(raw_alias[1:] if exact else raw_alias)
+            if len(needle) < 2:
+                continue
+            for candidate in candidates:
+                if (candidate == needle) if exact else (needle in candidate):
+                    return f"公司屏蔽（{raw_alias}）"
+    return None
+
+
 def keyword_in_list_fields(job: Job, keyword: str) -> bool:
     """关键词是否命中岗位「标题 / 标签(skills+labels)」任一处；关键词为空视为命中。"""
     tokens = [t for t in (keyword or "").split() if t]
@@ -144,6 +196,16 @@ def passes_filters(job: Job, keyword: str, query: JobQuery, check_keyword: bool 
     """
     # ---- 关键词：标题或标签含搜索词任一词元即命中 ----
     if check_keyword and not keyword_in_list_fields(job, keyword):
+        return False
+
+    # ---- 公司屏蔽：通用名单 + 平台专属追加名单 ----
+    if company_block_reason(
+        getattr(job, "company", None),
+        getattr(job, "platform", ""),
+        getattr(job, "extra", None),
+        query.company_blacklist,
+        query.company_blacklist_by_platform,
+    ):
         return False
 
     # ---- 薪资：区间有交集才保留（配置单位为 K/月） ----

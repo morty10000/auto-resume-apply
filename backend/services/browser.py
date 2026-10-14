@@ -61,8 +61,20 @@ def _edge_from_registry() -> str | None:
 # 系统专用窗口：所有平台共用同一个 Edge 实例，平台登录页为其标签页
 SYSTEM_KEY = "system"
 
+def _api_port() -> int:
+    """本地服务端口；测试 / 多实例场景可通过环境变量覆盖。"""
+    raw = os.environ.get("AUTO_RESUME_API_PORT", "8000").strip() or "8000"
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 8000
+    return min(max(port, 1), 65535)
+
+
+API_PORT = _api_port()
+
 # 项目前端界面地址（start.bat 启动的本地服务；界面页与登录页同窗口承载）
-UI_URL = "http://127.0.0.1:8000"
+UI_URL = f"http://127.0.0.1:{API_PORT}"
 _UI_NETLOC = urlparse(UI_URL).netloc                      # 127.0.0.1:8000
 _UI_LOCAL = f"localhost:{urlparse(UI_URL).port or 80}"    # localhost:8000
 

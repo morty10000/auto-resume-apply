@@ -44,6 +44,12 @@ class JobQuery(BaseModel):
     # 约 X 天内有活跃信号才保留（None = 不限）；平台未提供活跃信息时不过滤。
     hr_active_days: int | None = None
 
+    # ---- 公司屏蔽（采集侧硬过滤）----
+    # 通用名单对所有平台生效；平台名单用于适配不同平台的「简称 / 公司全称 / 英文名」差异。
+    # 条目默认按包含匹配；以 = 开头表示精确匹配；同一行可用 | 分隔多个别名。
+    company_blacklist: list[str] = Field(default_factory=list)
+    company_blacklist_by_platform: dict[str, list[str]] = Field(default_factory=dict)
+
     # ---- 已入库岗位集合（采集配额用）----
     # 这些岗位不占用 max_jobs 配额：配额只统计「新岗位」，
     # 已入库的岗位仍会返回（用于补录正文），但不会让采集提前停止。

@@ -344,6 +344,9 @@ class BossPlatform(BasePlatform):
                 "brand_stage": it.get("brandStageName"),
                 "brand_industry": it.get("brandIndustry"),
                 "brand_scale": it.get("brandScaleName"),
+                "company_aliases": [
+                    x for x in (it.get("brandName"), it.get("brandNameEn"), it.get("brandNameShort")) if x
+                ],
                 "hr_active_desc": active_text or ("在线" if it.get("bossOnline") else None),
                 "hr_active_days": (
                     parse_active_days(active_text) if active_text

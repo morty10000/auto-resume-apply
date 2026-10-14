@@ -18,26 +18,6 @@ $zipPath    = Join-Path $distDir "$folderName-便携版.zip"
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 
-$excludeArgs = @(
-    "--exclude=$folderName/.venv",
-    "--exclude=$folderName/.git",
-    "--exclude=$folderName/build_tmp",
-    "--exclude=$folderName/data",
-    "--exclude=$folderName/dist",
-    "--exclude=$folderName/scripts/_*",
-    "--exclude=$folderName/scripts/collect_sample.py",
-    "--exclude=$folderName/scripts/diag_boss.py",
-    "--exclude=$folderName/scripts/screenshot.py",
-    "--exclude=$folderName/scripts/verify_block*",
-    "--exclude=$folderName/项目计划书.md",
-    "--exclude=$folderName/UI设计规范.md",
-    "--exclude=$folderName/runtime/Scripts",
-    "--exclude=$folderName/runtime/Lib/site-packages/playwright/driver/package/.local-browsers",
-    "--exclude=$folderName/runtime/Lib/site-packages/playwright/driver/package/.local-browsers/*",
-    "--exclude=*/__pycache__*",
-    "--exclude=*.pyc"
-)
-
 # ---- 内容级扫描（打包前）：任何待打包文件都不得内嵌本机路径（含 exe 二进制）----
 $py      = Join-Path $root "runtime\python.exe"
 $scanner = Join-Path $root "scripts\package_scan.py"
@@ -52,13 +32,10 @@ if ((Test-Path -LiteralPath $py) -and (Test-Path -LiteralPath $scanner)) {
     Write-Host "[警告] 缺少 runtime 或扫描脚本，已跳过内容扫描。"
 }
 
-Push-Location $parentDir
-try {
-    tar -a -c -f $zipPath @excludeArgs $folderName
-    if ($LASTEXITCODE -ne 0) { throw "tar 打包失败, 退出码 $LASTEXITCODE" }
-} finally {
-    Pop-Location
-}
+$packer = Join-Path $root "scripts\package_portable.py"
+if (-not (Test-Path -LiteralPath $packer)) { Write-Host "打包失败：缺少 scripts\package_portable.py"; exit 1 }
+& $py -X utf8 $packer --root $root --zip $zipPath
+if ($LASTEXITCODE -ne 0) { throw "便携包生成失败, 退出码 $LASTEXITCODE" }
 
 # ---- 安全校验：缺必需文件 / 混入个人数据 → 直接判定失败 ----
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -76,7 +53,10 @@ $required = @(
     "$folderName/frontend/index.html",
     "$folderName/frontend/style.css",
     "$folderName/frontend/app.js",
+    "$folderName/frontend/favicon.svg",
     "$folderName/frontend/themes/dark.css",
+    "$folderName/scripts/package_portable.py",
+    "$folderName/scripts/server_host.py",
     "$folderName/scripts/open_ui.py",
     "$folderName/scripts/browser_launcher.cmd",
     "$folderName/scripts/install_browser_shortcut.ps1",

@@ -9,10 +9,14 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]   # backend/core/paths.py → 项目根
-DATA_DIR = PROJECT_ROOT / "data"
+# 测试 / 便携版可在导入后端前覆盖数据目录，避免碰到真实账号数据。
+# 未设置时保持原来的项目内 data/ 行为。
+_data_override = os.environ.get("AUTO_RESUME_DATA_DIR", "").strip()
+DATA_DIR = Path(_data_override).expanduser().resolve() if _data_override else PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "app.db"
 BROWSER_DATA_DIR = DATA_DIR / "browser_data"
 RESUMES_DIR = DATA_DIR / "resumes"

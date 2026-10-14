@@ -41,16 +41,20 @@ netstat -ano | findstr ":8000" | findstr "LISTENING" >nul 2>&1
 if not errorlevel 1 (
     curl.exe -s -m 3 -o nul http://127.0.0.1:8000/api/health >nul 2>&1
     if not errorlevel 1 (
-        echo [INFO] The app is already running - opening the UI, no second server started.
         if exist "%~dp0runtime\pythonw.exe" (
             start "" "%~dp0runtime\pythonw.exe" -X utf8 "%~dp0scripts\open_ui.py"
         ) else (
             start "" /min powershell -NoProfile -WindowStyle Hidden -Command "& '%PY%' -X utf8 '%~dp0scripts\open_ui.py'"
         )
-        ping -n 5 127.0.0.1 >nul
         exit /b 0
     )
-    echo [WARN] Port 8000 is used by another program; the server below will fail.
+)
+
+rem ===== launch the hidden server, then close this console window =====
+if exist "%~dp0runtime\pythonw.exe" (
+    start "" "%~dp0runtime\pythonw.exe" -X utf8 "%~dp0scripts\server_host.py"
+) else (
+    start "" powershell.exe -NoProfile -WindowStyle Hidden -Command "& '%PY%' -X utf8 '%~dp0scripts\server_host.py'"
 )
 
 rem ===== launch the UI opener in background (no window) =====
@@ -60,8 +64,4 @@ if exist "%~dp0runtime\pythonw.exe" (
     start "" /min powershell -NoProfile -WindowStyle Hidden -Command "& '%PY%' -X utf8 '%~dp0scripts\open_ui.py'"
 )
 
-rem ===== run the server in this window (keep it open) =====
-"%PY%" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 >> "%~dp0data\server_console.log" 2>&1
-echo.
-echo Server exited. If unexpected, check: data\server_console.log  /  data\startup.log
-pause
+exit /b 0

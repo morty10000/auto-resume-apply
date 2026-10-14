@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 
 from backend.api.match import load_resume
 from backend.core import task_control
+from backend.core.job_filter import company_block_reason
 from backend.core.pace import pace_pair
 from backend.core.task_locks import BUSY_DETAIL, collect_lock, match_lock
 from backend.core.task_locks import apply_lock as _lock
@@ -55,6 +56,8 @@ class ApplyIn(BaseModel):
     daily_limit_by_platform: dict[str, int] | None = None     # 每个平台各自的每日上限（优先生效）
     pace_by_platform: dict[str, dict] | None = None           # 每平台节奏方案：{platform: {"apply_delay": [lo, hi]}}
     platforms: list[str] | None = None                        # 仅投递这些平台（None=全部；按平台精确投递用）
+    company_blacklist: list[str] = Field(default_factory=list)                 # 通用公司屏蔽名单
+    company_blacklist_by_platform: dict[str, list[str]] = Field(default_factory=dict)  # 四平台各自追加名单
     flow: str = "apply"            # apply=单独投递；all=一键全流程里的投递环节
     flow_label: str = ""           # 任务来源，监控页展示用
 
@@ -170,7 +173,25 @@ async def _apply_impl(item: ApplyIn) -> dict:
             q = q.where(JobRow.platform.in_([str(p) for p in item.platforms]))
         q = q.order_by(JobRow.match_score.desc(), JobRow.id.asc())
         rows = s.execute(q).scalars().all()
-        queue = [(r.id, _row_payload(r), r.match_score) for r in rows]
+        queue = []
+        blocked_company = []
+        for r in rows:
+            payload = _row_payload(r)
+            # 公司屏蔽只在自动队列生效；用户显式单条重试 / 指定岗位仍可手动覆盖。
+            if not item.job_ids:
+                reason = company_block_reason(
+                    r.company, r.platform, payload.get("extra"),
+                    item.company_blacklist, item.company_blacklist_by_platform,
+                )
+                if reason:
+                    blocked_company.append((r, reason))
+                    continue
+            queue.append((r.id, payload, r.match_score))
+
+    if blocked_company:
+        preview = "、".join(f"#{r.id} {r.company}" for r, _ in blocked_company[:8])
+        more = f" 等{len(blocked_company)}个" if len(blocked_company) > 8 else ""
+        hub.log("INFO", f"公司屏蔽：自动投递队列已忽略 {len(blocked_company)} 个岗位（{preview}{more}）")
 
     # 按平台分组（保持分数序），平台之间按各自最高分排序
     groups: dict[str, list] = {}
@@ -182,6 +203,7 @@ async def _apply_impl(item: ApplyIn) -> dict:
     used_all = sum(_daily_used(p) for p in groups)
     base = {
         "ok": True, "queued": len(queue), "processed": 0, "applied": 0, "failed": 0,
+        "company_blocked": len(blocked_company),
         "daily_used": used_all, "daily_limit": item.daily_limit,
         "by_platform": {},
         "need_verify": False, "results": [],

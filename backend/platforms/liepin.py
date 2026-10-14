@@ -113,6 +113,9 @@ def _parse_api_job(it: dict) -> Job | None:
             "brand_industry": comp.get("compIndustry"),
             "brand_scale": comp.get("compScale"),
             "brand_stage": "",
+            "company_aliases": [
+                x for x in (comp.get("compName"), comp.get("compShortName"), comp.get("compNameEn")) if x
+            ],
             "hr_active_desc": recruiter.get("imShowText") or ("在线" if recruiter.get("inDay") else None),
             "hr_active_days": 0 if recruiter.get("inDay") else parse_active_days(recruiter.get("imShowText")),
             "publish_time": job.get("refreshTime"),

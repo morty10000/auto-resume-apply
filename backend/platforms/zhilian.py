@@ -124,6 +124,9 @@ def _parse_api_job(it: dict) -> Job | None:
             "brand_industry": it.get("industryName"),
             "brand_scale": it.get("companySize"),
             "brand_stage": it.get("financingStage") or "",
+            "company_aliases": [
+                x for x in (it.get("companyName"), it.get("companyShortName")) if x
+            ],
             "hr_active_desc": (staff.get("hrStateInfo") or ("在线" if staff.get("hrOnlineState") else None)),
             "hr_active_days": (
                 parse_active_days(staff.get("hrStateInfo"))

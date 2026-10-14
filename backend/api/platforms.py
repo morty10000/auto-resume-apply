@@ -54,6 +54,20 @@ async def list_platforms() -> list[dict]:
     items = []
     for name, meta in edge_login.PLATFORM_LOGIN.items():
         st = edge_login.get_login_status(name)
+        vf = verify_map.get(name) or {
+            "count_24h": 0, "last_at": None, "last_source": None, "last_detail": None,
+        }
+        # 兼容旧数据：如果 24 小时内已经触发过验证，但登录状态仍是旧的 logged_in，
+        # 用最近一次验证事件覆盖绿灯。用户重新登录后 updated_at 会晚于 last_at，
+        # 此处不会再次覆盖。
+        if (
+            st.get("status") == "logged_in"
+            and vf.get("last_at")
+            and (not st.get("updated_at") or vf["last_at"] > st["updated_at"])
+        ):
+            src = "投递" if vf.get("last_source") == "apply" else "采集"
+            edge_login.mark_verify_required(name, f"{src}触发安全验证")
+            st = edge_login.get_login_status(name)
         items.append({
             "name": name,
             "display_name": meta["display_name"],
@@ -64,9 +78,7 @@ async def list_platforms() -> list[dict]:
             "updated_at": st.get("updated_at"),
             "checked_at": edge_login.get_checked_at(name),
             "edge_running": running,
-            "verify": verify_map.get(name) or {
-                "count_24h": 0, "last_at": None, "last_source": None, "last_detail": None,
-            },
+            "verify": vf,
         })
     return items
 

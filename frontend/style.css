@@ -295,6 +295,20 @@ input[type="range"]:active::-webkit-slider-thumb {
 .pace-row.off { opacity: .45; }
 .pace-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 
+/* 公司屏蔽（通用 + 平台专属） */
+.company-block-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.company-block-head label { margin-bottom: 0 !important; }
+.company-block-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.company-block-item {
+  padding: 10px 12px; border-radius: var(--radius-sm); background: var(--tint);
+  min-width: 0;
+}
+.company-block-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.company-block-title span { font-size: 12.5px; color: var(--text-2); font-weight: 600; }
+.company-block-title .btn { padding: 3px 9px; font-size: 11.5px; }
+.company-block-item .tag-input { min-height: 40px; padding: 6px 9px; }
+.company-block-item .tag-input input { min-width: 100px; font-size: 12.5px; }
+
 /* 验证续跑横幅 */
 .resume-bar { margin-bottom: 12px; }
 .resume-item {
@@ -398,6 +412,7 @@ input[type="range"]:active::-webkit-slider-thumb {
 .dot-off { background: #a8b0bd; }
 .dot-unknown { background: #98a2b3; }
 .dot-waiting { background: var(--warn-dot); animation: dotpulse 1.2s ease-in-out infinite; }
+.dot-verify { background: var(--warn-dot); box-shadow: 0 0 0 3px rgba(217, 119, 6, .16); }
 @keyframes dotpulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .login-ok { color: var(--ok); margin-left: auto; font-size: 12.5px; font-weight: 600; }
 .pc-foot .btn { margin-left: auto; }
@@ -668,6 +683,7 @@ tr.match-detail td {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
   .plat-limit-grid { grid-template-columns: 1fr; }
+  .company-block-grid { grid-template-columns: 1fr; }
   .span2 { grid-column: span 1; }
   .resume-result { grid-template-columns: 1fr; }
   .nav-bar { flex-wrap: wrap; padding: 0 12px; }
@@ -700,9 +716,10 @@ tr.match-detail td {
   #tab-collect-setup.active {
     display: grid; grid-template-columns: 1fr 1fr; align-items: start;
   }
-  #tab-collect-setup > .card:nth-child(1) { grid-column: 1 / -1; }
-  #tab-collect-setup > .card:nth-child(2) .form-grid { grid-template-columns: 1fr; }
-  #tab-collect-setup > .card:nth-child(2) .span2 { grid-column: span 1; }
+  #tab-collect-setup > .card:nth-child(1),
+  #tab-collect-setup > .card:nth-child(2) { grid-column: 1 / -1; }
+  #tab-collect-setup > .card:nth-child(n+3) .form-grid { grid-template-columns: 1fr; }
+  #tab-collect-setup > .card:nth-child(n+3) .span2 { grid-column: span 1; }
 
   /* 匹配设置：设置 3 / 评分说明 2 */
   #tab-match-setup.active {

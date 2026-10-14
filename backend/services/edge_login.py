@@ -204,15 +204,6 @@ async def launch_login_window(platform: str) -> tuple[bool, str]:
 _session_checked_at: dict[str, float] = {}   # 复核冷却时间戳（防连点）
 _SESSION_CHECK_COOLDOWN = 60.0               # 同一平台两次复核的最小间隔（秒）
 
-# 持久指纹复核结果缓存：(时间戳, 是否仍登录)。
-# 背景（2026-10-12 实测）：持久指纹（如 51job 的 uid，有效期 28 天）只能证明
-# 「这台机器登录过」，不能证明服务端会话还在——uid 还在时站点已要求重新登录，
-# 界面却一直绿灯。所以指纹匹配后必须再做一次真实会话页复核，结果缓存 10 分钟，
-# 避免 15 秒一次的状态轮询把复核页刷爆。
-_persist_verified: dict[str, tuple[float, bool]] = {}
-_PERSIST_VERIFY_TTL = 600.0
-
-
 async def verify_live_session(platform: str) -> bool | None:
     """「会话复核」：原生打开一次平台会话页，凭最终 URL 判断登录是否仍被站点承认。
 
@@ -286,26 +277,6 @@ async def verify_live_session(platform: str) -> bool | None:
     # 探测用的标签页用完即关：否则每次复核都会在 Edge 里多留一个标签
     browser.close_target(browser.SYSTEM_KEY, new_id)
     return result
-
-
-async def _persist_still_valid(platform: str, meta: dict, cur: dict) -> bool:
-    """持久指纹匹配后，再确认站点是否仍认这个会话（防假绿灯）。
-
-    返回 True=仍登录 / False=站点已要求重新登录。无法判定（None）时沿用上次结论；
-    从未判定过则维持旧行为（判为已登录），避免网络抖动造成误红。
-    """
-    if not meta.get("session_check"):
-        return True
-    ts, val = _persist_verified.get(platform, (0.0, False))
-    if time.time() - ts < _PERSIST_VERIFY_TTL:
-        return val
-    live = await verify_live_session(platform)
-    if live is None:
-        return val if ts else True
-    _persist_verified[platform] = (time.time(), live)
-    if not live:
-        logger.warning("[%s] 持久指纹仍在，但站点已要求重新登录（会话失效）", platform)
-    return live
 
 
 async def mark_session_verified(platform: str) -> None:
@@ -478,12 +449,27 @@ def mark_login_lost(platform: str, evidence: str) -> None:
     set_login_status(platform, "not_logged", msg, source="run")
 
 
+def mark_verify_required(platform: str, evidence: str = "平台触发安全验证") -> None:
+    """运行期平台要求验证码/滑块 → 标记为「需验证」。
+
+    该状态与「登录 cookie 是否仍存在」是两回事：Boss 等平台遇到安全验证时，
+    登录 cookie 往往仍然有效，因此不能用 cookie 探测把它自动翻回绿灯。
+    必须由用户重新登录，或后续运行真实成功后再恢复 ``logged_in``。
+    """
+    msg = f"{evidence}，请在 Edge 中处理验证后重新登录"
+    cur = get_login_status(platform)
+    if cur.get("status") == "verify_required" and cur.get("message") == msg:
+        return
+    logger.warning("[%s] %s", platform, msg)
+    set_login_status(platform, "verify_required", msg, source="run")
+
+
 def note_apply_success(platform: str) -> None:
     """运行期投递成功 → 登录态自愈（投递成功是会话有效的最强证据）。"""
     cur = get_login_status(platform)
     if cur.get("status") == "logged_in":
         return
-    set_login_status(platform, "logged_in", "运行校验通过（投递成功，登录有效）", source="run")
+    set_login_status(platform, "logged_in", "运行校验通过（投递成功，登录与验证状态均有效）", source="run")
 
 
 async def clear_login_cookies(platform: str) -> int:
@@ -526,6 +512,9 @@ async def check_platform_login(platform: str) -> bool:
         return get_login_status(platform).get("status") == "logged_in"
     hits = _hint_hits(meta, cookies)
     cur = get_login_status(platform)
+    if cur.get("status") == "verify_required":
+        # 验证拦截是比 cookie 更近期的运行期证据，不能带着旧会话继续投递。
+        return False
     if hits:
         # 访问令牌保活：短期令牌缺失（仍有长期令牌）→ 先访问主站续期一次，
         # 避免带着「残废会话」进入投递（被弹登录页）——智联实测场景
@@ -544,16 +533,15 @@ async def check_platform_login(platform: str) -> bool:
             )
         return True
     if _persist_match(meta, cookies, cur):
-        # 会话特征丢失（浏览器重启），但持久指纹仍匹配 → 站点仍认登录，不误报
+        # 会话特征丢失（浏览器重启），但持久指纹仍匹配 → 先按登录处理。
+        # 不在这里打开平台页面；采集 / 投递适配器会用真实接口结果校正状态，
+        # 避免“开始运行”时额外弹出一个复核页。
         if cur.get("source") == "run" and cur.get("status") != "logged_in":
             return False   # 运行期已确认失效的，等待重新登录
-        if not await _persist_still_valid(platform, meta, cur):
-            mark_login_lost(platform, "会话复核未通过")
-            return False
         if cur.get("status") != "logged_in":
             set_login_status(
                 platform, "logged_in",
-                "登录态跨会话保留（持久凭据复核通过）",
+                "登录态跨会话保留（持久凭据），运行时将自动核对",
                 source="cookie",
             )
         return True
@@ -590,7 +578,11 @@ async def probe_login_states() -> None:
         cur = get_login_status(name)
         if hits:
             _refresh_persist(name, meta, cookies, hits)
-            if cur.get("status") != "logged_in" and cur.get("source") != "run":
+            if (
+                cur.get("status") != "logged_in"
+                and cur.get("status") != "verify_required"
+                and cur.get("source") != "run"
+            ):
                 set_login_status(
                     name,
                     "logged_in",
@@ -598,16 +590,18 @@ async def probe_login_states() -> None:
                     source="cookie",
                 )
         elif _persist_match(meta, cookies, cur):
-            # 会话特征丢失（浏览器重启），但持久指纹仍匹配 → 先做真实会话复核，防假绿灯
+            # 看板刷新只读 cookie，绝不打开平台页做“会话复核”。
+            # 持久凭据存在时先保持登录展示；真实会话由采集 / 投递接口结果校正。
             if cur.get("source") == "run" and cur.get("status") != "logged_in":
                 continue
-            if not await _persist_still_valid(name, meta, cur):
-                mark_login_lost(name, "会话复核未通过")
-                continue
-            if cur.get("status") != "logged_in" and cur.get("source") != "run":
+            if (
+                cur.get("status") != "logged_in"
+                and cur.get("status") != "verify_required"
+                and cur.get("source") != "run"
+            ):
                 set_login_status(
                     name, "logged_in",
-                    "登录态跨会话保留（持久凭据复核通过）",
+                    "登录态跨会话保留（持久凭据），运行时将自动核对",
                     source="cookie",
                 )
         elif cur.get("status") == "logged_in":

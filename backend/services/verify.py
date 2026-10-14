@@ -164,6 +164,7 @@ def note_verify_event(platform: str, source: str, detail: str = "") -> None:
     - source: collect=采集 / apply=投递
     - 任何异常都不影响主流程（展示功能，尽力而为）
     """
+    action = "投递" if source == "apply" else ("采集" if source == "collect" else "运行")
     try:
         from backend.db.database import session_scope
         from backend.db.models import VerifyEvent
@@ -172,3 +173,10 @@ def note_verify_event(platform: str, source: str, detail: str = "") -> None:
             s.add(VerifyEvent(platform=platform, source=source, detail=detail[:200] or None))
     except Exception:  # noqa: BLE001
         logger.exception("记录验证事件失败（不影响主流程）")
+
+    try:
+        from backend.services import edge_login
+
+        edge_login.mark_verify_required(platform, f"{action}触发安全验证")
+    except Exception:  # noqa: BLE001
+        logger.exception("同步平台验证状态失败（不影响主流程）")

@@ -49,12 +49,24 @@ def backend_routes() -> dict[str, set[str]]:
 
 def frontend_calls() -> list[tuple[str, str, int]]:
     """返回 [(模板, 方法, 行号)]。"""
+    def route_template(raw: str) -> str:
+        # JS 模板里的三元表达式可能是可选的查询串，例如
+        # `/api/platforms/${name}/login${force ? '?force=1' : ''}`。
+        # 含 `?` 的表达式不应当当成路径参数保留，否则会把 query 误识别成路由。
+        s = re.sub(
+            r"\$\{([^{}]*)\}",
+            lambda m: "" if "?" in m.group(1) else "{}",
+            raw,
+        )
+        s = s.split("?", 1)[0]
+        return re.sub(r"\{\}+", "{}", s)
+
     calls = []
     for m in re.finditer(r"fetch\(\s*([`'\"])(.+?)\1", JS):
         raw, line = m.group(2), JS[: m.start()].count("\n") + 1
         if "/api" not in raw:
             continue
-        tmpl = re.sub(r"\$\{[^}]+\}", "{}", raw.split("?")[0])
+        tmpl = route_template(raw)
         tail = JS[m.end(): m.end() + 220]
         method = "POST" if re.search(r"method:\s*['\"]POST", tail) else "GET"
         calls.append((tmpl, method, line))

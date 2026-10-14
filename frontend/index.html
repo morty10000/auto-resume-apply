@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>全自动投递简历系统</title>
-  <link rel="stylesheet" href="style.css?v=20261012j">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css?v=20261014b">
 <!-- 界面风格皮肤（默认「新拟物」即 style.css 本身；以下按需启用） -->
 <link rel="stylesheet" data-theme-css="brutalist" href="themes/brutalist.css?v=20261005t" disabled>
 <link rel="stylesheet" data-theme-css="editorial" href="themes/editorial.css?v=20261005t" disabled>
@@ -168,6 +169,24 @@
           <label>新增采集上限（每个平台单独设置）</label>
           <div id="maxJobsByPlatform" class="plat-limit-grid"></div>
           <div class="hint">只统计「新岗位」：已入库的岗位不占配额（重复岗位不再提前结束采集）；采满即停（未勾选的平台不生效，灰色不可改）</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>公司屏蔽（按平台适配）</h2>
+      <p class="hint">采集中和自动投递前都会过滤。通用名单对四个平台生效；平台专属名单适配 Boss 的简称、智联/51job 的公司全称以及猎聘的英文名。默认按公司名包含匹配，以 <code>=</code> 开头表示精确匹配，同一条可用 <code>|</code> 分隔多个别名。</p>
+      <div class="form-grid">
+        <div class="form-item span2">
+          <div class="company-block-head">
+            <label>通用公司屏蔽名单</label>
+            <button type="button" id="btnCompanyCommonPreset" class="btn btn-ghost btn-sm">填入推荐名单</button>
+          </div>
+          <div id="companyCommonTags" class="tag-input"><input id="companyCommonInput" placeholder="如：软通动力|iSoftStone、中软国际、外企德科"></div>
+        </div>
+        <div class="form-item span2">
+          <label>平台专属追加名单</label>
+          <div id="companyPlatformGrid" class="company-block-grid"></div>
         </div>
       </div>
     </div>
@@ -453,6 +472,6 @@
 
 <div id="toastBox" class="toast-box"></div>
 
-<script src="app.js?v=20261013a"></script>
+<script src="app.js?v=20261014b"></script>
 </body>
 </html>

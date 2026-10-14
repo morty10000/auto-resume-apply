@@ -82,6 +82,8 @@ class CollectIn(BaseModel):
     pace_by_platform: dict[str, dict] | None = None      # 每平台节奏方案：{platform: {"page_delay": [lo, hi]}}
     verify_body_by_platform: dict[str, bool] | None = None   # 每平台正文校验（True=抓详情正文并按关键词过滤）
     hr_active_days: int | None = Field(default=None, ge=0, le=3650)   # HR活跃度过滤：X 天内有活跃信号才保留（None=不限）
+    company_blacklist: list[str] = Field(default_factory=list)                 # 通用公司屏蔽名单
+    company_blacklist_by_platform: dict[str, list[str]] = Field(default_factory=dict)  # 四平台各自追加名单
     flow: str = "collect"            # collect=单独采集；all=一键全流程里的采集环节
     flow_label: str = ""             # 任务来源（配置名 / 当前表单），监控页展示用
 
