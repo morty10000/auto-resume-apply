@@ -245,7 +245,7 @@ async def open_background_tab(key: str, url: str, timeout_s: float = 15.0) -> bo
                 await ws.send(json.dumps({
                     "id": 1,
                     "method": "Target.createTarget",
-                    "params": {"url": url, "background": True, "forTab": True},
+                    "params": {"url": url, "background": True}   # 不能带 forTab：Edge 会返回对不上的 targetId,
                 }))
                 deadline = time.time() + timeout_s
                 while time.time() < deadline:
@@ -402,6 +402,8 @@ async def open_owned_tab(key: str, domain: str, url: str, timeout_s: float = 15.
         ws_url = _browser_ws_url(key)
         if not ws_url:
             return None
+        prev_active = await active_page_id(key)     # 建页前：用户当前看的是哪个标签
+        before_ids = {t.get("id") for t in list_targets(key) if t.get("type") == "page"}
         target_id = ""
         with _foreground_guard():
             async with websockets.connect(ws_url, max_size=16 * 1024 * 1024) as ws:
@@ -409,7 +411,7 @@ async def open_owned_tab(key: str, domain: str, url: str, timeout_s: float = 15.
                     "id": 1,
                     "method": "Target.createTarget",
                     # background=True：新标签不抢占当前可见标签页，用户视角无任何切换
-                    "params": {"url": url, "background": True, "forTab": True},
+                    "params": {"url": url, "background": True}   # 不能带 forTab：Edge 会返回对不上的 targetId,
                 }))
                 deadline = time.time() + timeout_s
                 while time.time() < deadline:
@@ -434,12 +436,26 @@ async def open_owned_tab(key: str, domain: str, url: str, timeout_s: float = 15.
                 break
             await asyncio.sleep(0.5)
         if tab is None:
-            # 建了却查不到：直接关掉，防止留下没人认领的孤儿标签越积越多
-            close_target(key, target_id)
-            return None
+            # 个别 Edge 版本返回的 targetId 与列表里的真实 id 不一致：按「刚新增的标签」
+            # 兜底认领（只认多出来的那一个，绝不碰用户原有标签）。
+            added = [t for t in list_targets(key)
+                     if t.get("type") == "page" and t.get("id") not in before_ids]
+            if len(added) == 1:
+                tab = added[0]
+                target_id = tab.get("id") or ""
+            else:
+                # 确实没建出来：关掉可能的孤儿目标，交给上层重试
+                close_target(key, target_id)
+                return None
         await asyncio.sleep(1.0)          # 等页面上下文建立，再打标记
         await mark_owned(key, target_id)
         remember_tab(target_id, domain)
+        # 关键：Chromium 新建标签在窗口未聚焦时可能顺手把它设为活动标签，
+        # 用户回到 Edge 就会看到岗位页。这里确定性地把看板标签置回活动标签，
+        # 保证自动化标签始终留在后台（前面已用前台守卫避免抢系统焦点）。
+        with _foreground_guard():
+            if not focus_ui_tab(key) and prev_active and prev_active != target_id:
+                activate_target(key, prev_active)
         return find_target_by_id(key, target_id)
     except Exception:  # noqa: BLE001
         return None
@@ -538,7 +554,7 @@ async def ensure_apply_tab_background(key: str, domain: str, url: str) -> dict |
         tab = await ensure_owned_tab(key, domain, url)
         if tab is None:
             return None
-        ensure_tab_background(key, tab.get("id", ""))
+        await ensure_tab_background(key, tab.get("id", ""))
         return tab
 
 
@@ -559,30 +575,43 @@ def focus_ui_tab(key: str) -> bool:
     return False
 
 
-def ensure_tab_background(key: str, target_id: str) -> bool:
-    """确保指定标签页处于后台（不被用户看见）：若它当前是活动标签，先把界面页顶到前台。
+_VISIBILITY_JS = "document.visibilityState"
 
-    这样后续对该标签的导航/点击不会出现在用户眼前——用户视角始终停在项目看板。
+
+async def is_tab_visible(key: str, target_id: str) -> bool:
+    """该标签页是否为所在窗口的「当前标签」。
+
+    Chromium 里只有活动标签的 document.visibilityState 为 'visible'，
+    同窗口其它标签一律 'hidden' —— 这比 /json/list 的顺序可靠得多。
     """
     if not target_id:
         return False
-    active = None
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port_for(key)}/json/list", timeout=5
-        ) as r:
-            targets = json.loads(r.read().decode("utf-8"))
-    except Exception:  # noqa: BLE001
+    return await raw_evaluate(key, target_id, _VISIBILITY_JS, timeout_s=5) == "visible"
+
+
+async def active_page_id(key: str) -> str | None:
+    """取当前活动标签的 id（找不到返回 None）。"""
+    for t in list_targets(key):
+        if t.get("type") != "page":
+            continue
+        tid = t.get("id") or ""
+        if tid and await is_tab_visible(key, tid):
+            return tid
+    return None
+
+
+async def ensure_tab_background(key: str, target_id: str) -> bool:
+    """确保指定标签页处于后台（不被用户看见）。
+
+    若它此刻正是窗口的活动标签，就把界面页顶回前台，后续对该标签的导航/点击
+    就不会出现在用户眼前 —— 用户视角始终停在项目看板。
+    """
+    if not target_id:
         return False
-    for t in targets or []:
-        if t.get("type") == "page" and not is_ui_url(t.get("url") or ""):
-            active = t
-            break
-    if active is not None and active.get("id") == target_id:
-        # 守卫：切标签会把 Edge 窗口顶到系统前台，操作结束后把焦点还给用户原本的应用
-        with _foreground_guard():
-            return focus_ui_tab(key)
-    return True
+    if not await is_tab_visible(key, target_id):
+        return True
+    with _foreground_guard():
+        return focus_ui_tab(key)
 
 
 def is_ui_url(url: str) -> bool:

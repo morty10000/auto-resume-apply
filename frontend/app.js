@@ -97,6 +97,33 @@ function stopTaskPoll() {
   taskPoll.timer = null;
 }
 
+/* 空闲守护：本页当前没有在跑任务时，仍以低速（3 秒）轮询服务端。
+   解决「任务是在另一个标签页启动的，本页一直显示空闲、也看不到日志」的问题；
+   一旦发现后台有任务在跑，就切到监控并接管为 1.5 秒实时轮询。 */
+const idleWatch = { timer: null };
+
+function stopIdleWatch() {
+  if (idleWatch.timer) clearInterval(idleWatch.timer);
+  idleWatch.timer = null;
+}
+
+function startIdleWatch() {
+  stopIdleWatch();
+  idleWatch.timer = setInterval(async () => {
+    if (taskPoll.timer) return;                 // 已有实时轮询在跑，交给它
+    let s;
+    try { s = await fetchTaskStatus(); } catch { return; }
+    if (!(s.active || s.busy)) return;          // 空闲：什么都不做
+    // 发现任务在其他标签页启动（或本页提交后未接管）→ 接入实时监控
+    taskPoll.wasActive = true;
+    taskPoll.doneHandled = false;
+    taskPoll.lastLogSeq = 0;                    // 服务端日志按任务清空，从头重放本次任务
+    switchTab('monitor');
+    applyTaskSnapshot(s);
+    startTaskPoll();
+  }, 3000);
+}
+
 async function pollTaskOnce() {
   try {
     const s = await fetchTaskStatus();
@@ -1886,6 +1913,7 @@ function init() {
   setRunStatus('idle');
   appendLog('SYSTEM', '等待任务启动…先在「配置」页完成平台选择、简历上传与岗位条件设置。');
   void restoreTaskState();   // 页面加载 / 刷新后：若后台有任务在跑，直接接入实时监控
+  startIdleWatch();          // 空闲时也低速轮询：别的标签页启动任务时本页能立刻接管
 }
 
 document.addEventListener('DOMContentLoaded', init);
