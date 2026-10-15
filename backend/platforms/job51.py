@@ -185,23 +185,12 @@ class Job51Platform(BasePlatform):
     # ------------------------------------------------------------ 标签页
 
     async def _find_tab(self) -> dict | None:
-        for t in browser.list_targets(browser.SYSTEM_KEY):
-            if t.get("type") == "page" and "51job.com" in (t.get("url") or ""):
-                return t
-        return None
+        """找本项目专属的 51job.com 后台标签页（不占用用户可见页面）。"""
+        return await browser.find_owned_tab(browser.SYSTEM_KEY, "51job.com")
 
     async def _ensure_tab(self, first_url: str) -> dict | None:
-        tab = await self._find_tab()
-        if tab is not None:
-            return tab
-        await browser.open_background_tab(browser.SYSTEM_KEY, first_url)
-        for _ in range(20):
-            task_control.raise_if_cancelled()
-            await task_control.cancellable_sleep(0.8)
-            tab = await self._find_tab()
-            if tab is not None:
-                return tab
-        return None
+        """复用专属后台标签；无则后台新建（51job 全程不切前台）。"""
+        return await browser.ensure_owned_tab(browser.SYSTEM_KEY, "51job.com", first_url)
 
     async def _goto_search(self, tab: dict, keyword: str, area_code: str) -> bool:
         """把标签导航到对应搜索页（页面语境与请求一致）。"""
@@ -352,7 +341,7 @@ class Job51Platform(BasePlatform):
                             logger.warning("51job 标签页网络无响应（僵尸化），重开标签页重试")
                             self.note("标签页网络无响应，正在重开标签页…")
                             _surl = SEARCH_PAGE.format(area=area_code, kw=quote(keyword))
-                            await browser.replace_tab(browser.SYSTEM_KEY, tab["id"], _surl)
+                            await browser.replace_tab_background(browser.SYSTEM_KEY, "51job.com", tab["id"], _surl)
                             await task_control.cancellable_sleep(2.0)
                             tab = await self._ensure_tab(_surl)
                             if tab is None:
@@ -524,7 +513,7 @@ class Job51Platform(BasePlatform):
         if not await self.check_login():
             return ApplyResult(success=False, message="登录态失效，请重新登录")
 
-        tab = await self._ensure_tab(job.url)
+        tab = await browser.ensure_apply_tab_background(browser.SYSTEM_KEY, "51job.com", job.url)
         if tab is None:
             return ApplyResult(success=False, message="无法获得 51job 标签页")
         if not await self._goto_detail(tab, job.url):
@@ -537,7 +526,7 @@ class Job51Platform(BasePlatform):
         # 预检：标签页网络僵尸化（后台停留过久）→ 关掉重开
         if await browser.page_network_alive(browser.SYSTEM_KEY, tab["id"]) is False:
             logger.warning("51job 标签页网络无响应，重开标签页重试")
-            await browser.replace_tab(browser.SYSTEM_KEY, tab["id"], job.url)
+            await browser.replace_tab_background(browser.SYSTEM_KEY, "51job.com", tab["id"], job.url)
             await task_control.cancellable_sleep(2.0)
             tab = await self._ensure_tab(job.url)
             if tab is None or not await self._goto_detail(tab, job.url):

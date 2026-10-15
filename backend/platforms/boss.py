@@ -210,22 +210,12 @@ class BossPlatform(BasePlatform):
     # ------------------------------------------------------------ 采集
 
     async def _find_fetch_tab(self) -> dict | None:
-        """找一个可用于页面内请求的 zhipin 搜索标签页。"""
-        return browser.find_target(browser.SYSTEM_KEY, "zhipin.com/web/geek/jobs")
+        """找本项目专属的 zhipin 采集标签页（绝不占用用户自己打开的页面）。"""
+        return await browser.find_owned_tab(browser.SYSTEM_KEY, "zhipin.com")
 
     async def _ensure_fetch_tab(self, first_url: str) -> dict | None:
-        """复用已有搜索标签；没有则原生转发打开一个（等同手动点 +），等它出现。"""
-        tab = await self._find_fetch_tab()
-        if tab is not None:
-            return tab
-        await browser.open_background_tab(browser.SYSTEM_KEY, first_url)
-        for _ in range(20):
-            task_control.raise_if_cancelled()
-            await task_control.cancellable_sleep(0.8)
-            tab = await self._find_fetch_tab()
-            if tab is not None:
-                return tab
-        return None
+        """复用专属后台标签；没有才新建一个后台标签（全程不切前台、不抢焦点）。"""
+        return await browser.ensure_owned_tab(browser.SYSTEM_KEY, "zhipin.com", first_url)
 
     async def _human_touch(self, tab: dict) -> None:
         """在页面里做一次轻度滚动，降低机械感。"""
@@ -243,8 +233,10 @@ class BossPlatform(BasePlatform):
         if not ok:
             logger.warning("导航到搜索页失败：%s", target)
         await self._wait_page_ready(tab["id"], keyword, page_no)
-        updated = browser.find_target(browser.SYSTEM_KEY, "zhipin.com/web/geek/jobs")
-        if updated:
+        # 只接受同一个专属标签的最新信息：绝不把 tab 换成用户自己的页面，
+        # 否则后续 raw_navigate 会打在用户正在看的标签上。
+        updated = browser.find_target_by_id(browser.SYSTEM_KEY, tab.get("id", ""))
+        if updated and browser.is_owned(updated.get("id", "")):
             tab.update(updated)
 
     async def _wait_page_ready(self, target_id: str, keyword: str, page_no: int) -> None:
@@ -432,9 +424,8 @@ class BossPlatform(BasePlatform):
                         if await browser.page_network_alive(browser.SYSTEM_KEY, tab["id"]) is False:
                             logger.warning("标签页网络无响应（僵尸化），重开标签页")
                             self.note("标签页网络无响应，正在重开标签页…")
-                            await browser.replace_tab(
-                                browser.SYSTEM_KEY, tab["id"],
-                                _build_search_url(keyword, city_code, page_no),
+                            await browser.replace_tab_background(
+                                browser.SYSTEM_KEY, "zhipin.com", tab["id"], _build_search_url(keyword, city_code, page_no)
                             )
                             await task_control.cancellable_sleep(2.0)
                         tab = await self._ensure_fetch_tab(
@@ -564,23 +555,12 @@ class BossPlatform(BasePlatform):
     # ------------------------------------------------------------ 投递
 
     async def _find_apply_tab(self) -> dict | None:
-        """找任意一个 zhipin 标签页（投递时用它打开岗位详情页）。"""
-        for t in browser.list_targets(browser.SYSTEM_KEY):
-            if t.get("type") == "page" and "zhipin.com" in (t.get("url") or ""):
-                return t
-        return None
+        """找本项目专属的 zhipin 后台标签页（不碰用户可见标签）。"""
+        return await browser.find_owned_tab(browser.SYSTEM_KEY, "zhipin.com")
 
     async def _ensure_apply_tab(self, url: str) -> dict | None:
-        """复用 zhipin 标签；没有则原生转发打开（等同手动点 +）。"""
-        tab = await self._find_apply_tab()
-        if tab is None:
-            await browser.open_background_tab(browser.SYSTEM_KEY, url)
-            for _ in range(20):
-                await task_control.cancellable_sleep(0.8)
-                tab = await self._find_apply_tab()
-                if tab is not None:
-                    return tab
-        return tab
+        """用专属后台标签投递：有则复用，无则后台新建（用户视角始终停在监控页）。"""
+        return await browser.ensure_owned_tab(browser.SYSTEM_KEY, "zhipin.com", url)
 
     async def _goto_job_page(self, tab: dict, job_url: str, force: bool = False) -> bool:
         """把标签页导航到岗位详情页并等待就绪（页面与请求语境一致）。force 时强制重载。"""
@@ -672,7 +652,7 @@ class BossPlatform(BasePlatform):
         if not await self.check_login():
             return ApplyResult(success=False, message="登录态失效，请重新扫码登录")
 
-        tab = await self._ensure_apply_tab(job.url)
+        tab = await browser.ensure_apply_tab_background(browser.SYSTEM_KEY, "zhipin.com", job.url)
         if tab is None:
             return ApplyResult(success=False, message="无法获得 zhipin 标签页")
         if not await self._goto_job_page(tab, job.url):
@@ -685,7 +665,7 @@ class BossPlatform(BasePlatform):
         # 预检：标签页网络僵尸化（后台停留过久）→ 关掉重开
         if await browser.page_network_alive(browser.SYSTEM_KEY, tab["id"]) is False:
             logger.warning("Boss 标签页网络无响应，重开标签页重试")
-            await browser.replace_tab(browser.SYSTEM_KEY, tab["id"], job.url)
+            await browser.replace_tab_background(browser.SYSTEM_KEY, "zhipin.com", tab["id"], job.url)
             await task_control.cancellable_sleep(2.0)
             tab = await self._ensure_apply_tab(job.url)
             if tab is None or not await self._goto_job_page(tab, job.url):

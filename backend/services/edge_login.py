@@ -226,23 +226,14 @@ async def verify_live_session(platform: str) -> bool | None:
     _session_checked_at[platform] = now
 
     before = {t.get("id") for t in browser.list_targets(browser.SYSTEM_KEY)}
-    if not browser.forward_open(browser.SYSTEM_KEY, cfg["url"]):
+    # 后台开页：复核是静默探测，不应把界面页顶掉（用户视角始终停在看板）。
+    # 建页失败就不再退化成可见开页 —— 宁可返回「无法判定」，也不打断用户。
+    probe = await browser.open_owned_tab(browser.SYSTEM_KEY, meta["cookie_domain"], cfg["url"])
+    if probe is None:
         return None
 
-    # 等新标签出现
-    new_id: str | None = None
-    for _ in range(24):
-        await asyncio.sleep(0.5)
-        for t in browser.list_targets(browser.SYSTEM_KEY):
-            if (
-                t.get("id") not in before
-                and t.get("type") == "page"
-                and meta["cookie_domain"] in (t.get("url") or "")
-            ):
-                new_id = t.get("id")
-                break
-        if new_id:
-            break
+    # open_owned_tab 已确保标签出现在列表中；这里再复核一次 id 有效即可
+    new_id: str | None = probe.get("id")
     if not new_id:
         return None
 
@@ -276,6 +267,7 @@ async def verify_live_session(platform: str) -> bool | None:
         result = None
     # 探测用的标签页用完即关：否则每次复核都会在 Edge 里多留一个标签
     browser.close_target(browser.SYSTEM_KEY, new_id)
+    browser.forget_tab(new_id)
     return result
 
 
@@ -314,19 +306,15 @@ async def _keepalive_refresh(platform: str, meta: dict) -> list[dict] | None:
     if not browser.is_running(browser.SYSTEM_KEY):
         return None
     _keepalive_at[platform] = now
-    # 优先复用现有平台标签做一次导航（不新开）；没有现成标签才原生转发新开
-    target = next(
-        (
-            t
-            for t in browser.list_targets(browser.SYSTEM_KEY)
-            if t.get("type") == "page" and meta["cookie_domain"] in (t.get("url") or "")
-        ),
-        None,
-    )
+    # 只能用「本项目专属后台标签」做保活：绝不导航用户自己打开的页面，
+    # 也不开可见标签（会把看板顶掉）。取不到专属标签就后台新建一个。
+    target = await browser.find_owned_tab(browser.SYSTEM_KEY, meta["cookie_domain"])
+    if target is None:
+        target = await browser.open_owned_tab(browser.SYSTEM_KEY, meta["cookie_domain"], ka["url"])
     if target:
         ok = await browser.raw_navigate(browser.SYSTEM_KEY, target.get("id", ""), ka["url"])
     else:
-        ok = browser.forward_open(browser.SYSTEM_KEY, ka["url"])
+        return None
     if not ok:
         return None
     await asyncio.sleep(8.0)   # 给站点续期 / 写入新 cookie 的时间

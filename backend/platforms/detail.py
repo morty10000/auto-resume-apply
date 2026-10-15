@@ -53,29 +53,16 @@ def build_extract_js(selectors: list[str], min_len: int = 120, max_len: int = 40
     )
 
 
-def _find_tab(domain: str, exclude_id: str) -> dict | None:
-    for t in browser.list_targets(browser.SYSTEM_KEY):
-        if t.get("type") != "page":
-            continue
-        u = t.get("url") or ""
-        if domain in u and t.get("id") != exclude_id:
-            return t
-    return None
-
-
 async def ensure_detail_tab(domain: str, exclude_id: str, first_url: str) -> dict | None:
-    """找一个该平台的非搜索标签做详情抓取；没有则原生转发新开一个。"""
-    tab = _find_tab(domain, exclude_id)
-    if tab is not None:
+    """取一个本项目专属的后台详情标签（与采集/投递同一套机制，绝不导走用户页面）。
+
+    优先复用已登记的专属标签；若只存在唯一一个专属标签且与搜索标签相同，
+    则新开一个（正文抓取与搜索分开，避免互相打断导航）。
+    """
+    tab = await browser.find_owned_tab(browser.SYSTEM_KEY, domain)
+    if tab is not None and tab.get("id") != exclude_id:
         return tab
-    await browser.open_background_tab(browser.SYSTEM_KEY, first_url)
-    for _ in range(20):
-        task_control.raise_if_cancelled()
-        await task_control.cancellable_sleep(0.8)
-        tab = _find_tab(domain, exclude_id)
-        if tab is not None:
-            return tab
-    return None
+    return await browser.ensure_owned_tab(browser.SYSTEM_KEY, domain, first_url)
 
 
 async def fetch_detail_text(tab: dict, url: str, url_key: str, selectors: list[str], humanize: bool = False) -> str | None:

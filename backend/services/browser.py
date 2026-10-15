@@ -212,10 +212,13 @@ def forward_open(key: str, url: str) -> bool:
     并同时带上界面页标签，保持窗口结构一致。
     """
     try:
+        # 说明：登录场景需要「可见」标签（用户要手动扫码），故不加前台守卫；
+        # 但兜底开页时若窗口不在前台，仍尽量保留用户当前焦点。
         if is_running(key):
             edge = find_edge()
             profile = BROWSER_DATA_DIR / f"edge_{key}"
-            subprocess.Popen([edge, f"--user-data-dir={profile}", url], close_fds=True)
+            with _foreground_guard():
+                subprocess.Popen([edge, f"--user-data-dir={profile}", url], close_fds=True)
             return True
         _spawn(key, [UI_URL, url])
         return True
@@ -237,27 +240,349 @@ async def open_background_tab(key: str, url: str, timeout_s: float = 15.0) -> bo
         ws_url = _browser_ws_url(key)
         if not ws_url:
             return False
-        async with websockets.connect(ws_url, max_size=16 * 1024 * 1024) as ws:
-            await ws.send(json.dumps({
-                "id": 1,
-                "method": "Target.createTarget",
-                "params": {"url": url, "background": True, "forTab": True},
-            }))
-            deadline = time.time() + timeout_s
-            while time.time() < deadline:
-                wait_s = max(0.5, deadline - time.time())
-                try:
-                    reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=wait_s))
-                except asyncio.TimeoutError:
-                    break
-                if reply.get("id") != 1:
-                    continue
-                if reply.get("error"):
-                    return False
-                return bool((reply.get("result") or {}).get("targetId"))
+        with _foreground_guard():
+            async with websockets.connect(ws_url, max_size=16 * 1024 * 1024) as ws:
+                await ws.send(json.dumps({
+                    "id": 1,
+                    "method": "Target.createTarget",
+                    "params": {"url": url, "background": True, "forTab": True},
+                }))
+                deadline = time.time() + timeout_s
+                while time.time() < deadline:
+                    wait_s = max(0.5, deadline - time.time())
+                    try:
+                        reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=wait_s))
+                    except asyncio.TimeoutError:
+                        break
+                    if reply.get("id") != 1:
+                        continue
+                    if reply.get("error"):
+                        return False
+                    return bool((reply.get("result") or {}).get("targetId"))
     except Exception:  # noqa: BLE001
         return False
     return False
+
+
+# ---------------------------------------------------------------- 前台守卫（Windows）
+#
+# 背景：Chromium 新建 target 时会把浏览器窗口顶到前台。若用户此时在看别的应用，
+# 就会被打断。守卫会在操作前后比对前台窗口，被抢走则立刻还回去。
+try:
+    import ctypes
+
+    _u32 = ctypes.windll.user32
+
+    def _fg_hwnd() -> int:
+        try:
+            return int(_u32.GetForegroundWindow())
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _restore_fg(hwnd: int, tries: int = 6) -> None:
+        """把前台窗口还给 hwnd（跨进程安全版本，带重试）。
+
+        Windows 前台锁规则下，后台进程直接 SetForegroundWindow 通常会被短暂忽略；
+        且 Chromium 新建标签会把窗口顶到前台。这里用 AttachThreadInput 挂接线程、
+        必要时用一次 0 键事件「吃掉」前台锁，并在 50ms 间隔内重试若干次，确保用户
+        视角不被后台建页打断。
+        """
+        if not hwnd:
+            return
+        try:
+            if not (_u32.IsWindow(hwnd) and _u32.IsWindowVisible(hwnd)):
+                return
+            if _u32.GetForegroundWindow() == hwnd:
+                return
+            cur_tid = ctypes.c_ulong()
+            tgt_tid = ctypes.c_ulong()
+            _u32.GetWindowThreadProcessId(_u32.GetForegroundWindow(), ctypes.byref(cur_tid))
+            _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(tgt_tid))
+            attached = False
+            if cur_tid.value and tgt_tid.value and cur_tid.value != tgt_tid.value:
+                try:
+                    attached = bool(_u32.AttachThreadInput(cur_tid.value, tgt_tid.value, True))
+                except Exception:  # noqa: BLE001
+                    attached = False
+            try:
+                for _ in range(max(1, tries)):
+                    _u32.ShowWindow(hwnd, 9)            # SW_RESTORE：确保窗口未最小化
+                    _u32.SetForegroundWindow(hwnd)
+                    if _u32.GetForegroundWindow() == hwnd:
+                        break
+                    # 释放前台锁：发一个空键事件，让系统认为本线程刚有输入
+                    try:
+                        _u32.keybd_event(0, 0, 0, 0)
+                        _u32.keybd_event(0, 0, 0x2, 0)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _u32.SetForegroundWindow(hwnd)
+                    if _u32.GetForegroundWindow() == hwnd:
+                        break
+                    _u32.Sleep(50)
+            finally:
+                if attached:
+                    try:
+                        _u32.AttachThreadInput(cur_tid.value, tgt_tid.value, False)
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
+
+except ImportError:  # 非 Windows：不做焦点处理
+    def _fg_hwnd() -> int:
+        return 0
+
+    def _restore_fg(hwnd: int) -> None:
+        return
+
+
+class _foreground_guard:
+    """操作期间保持原前台窗口不变（仅 Windows 生效）。"""
+
+    def __enter__(self):
+        self.prev = _fg_hwnd()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if self.prev and _fg_hwnd() != self.prev:
+                _restore_fg(self.prev)
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+
+# ---------------------------------------------------------------- 机器人专属标签页
+#
+# 需求：采集 / 正文 / 投递一律在「后台专属标签页」里完成，用户的可见标签页
+# （界面页、手动打开的岗位页、登录页）绝不被导航、绝不被抢焦点。
+#
+# 实现：后台新建的标签页记到内存表 _owned_tabs（{target_id: domain}），
+# 并对页面打一个 window.__autoResumeBot 标记 —— 进程重启后内存表丢失时，
+# 仍可凭页面内标记认领，不会退化成「随便找一个同域名标签」而导走用户页面。
+_owned_tabs: dict[str, str] = {}          # target_id -> 域名片段
+_OWN_MARK_JS = "(() => { try { window.name = window.name || 'auto-resume-bot';"
+_OWN_MARK_JS += " window.__autoResumeBot = 1; return 'ok'; } catch (e) { return 'err'; } })()"
+_OWN_PROBE_JS = "(() => { try { return (window.__autoResumeBot === 1 || window.name === 'auto-resume-bot') ? 'bot' : 'user'; } catch (e) { return 'err'; } })()"
+
+
+def remember_tab(target_id: str, domain: str) -> None:
+    """登记一个由本项目创建、可安全复用的后台标签页。"""
+    if target_id:
+        _owned_tabs[target_id] = domain or ""
+
+
+def forget_tab(target_id: str) -> None:
+    if target_id:
+        _owned_tabs.pop(target_id, None)
+
+
+def is_owned(target_id: str) -> bool:
+    return target_id in _owned_tabs
+
+
+async def mark_owned(key: str, target_id: str) -> None:
+    """给标签页打上「本项目专属」标记（重启后仍可凭标记认领）。"""
+    await raw_evaluate(key, target_id, _OWN_MARK_JS, timeout_s=8)
+
+
+async def open_owned_tab(key: str, domain: str, url: str, timeout_s: float = 15.0) -> dict | None:
+    """后台新建一个「本项目专属」标签页（不抢焦点），返回该 target。
+
+    与 open_background_tab 的区别：这里会记住 target_id 并打页面标记，
+    供后续 find_owned_tab 精确复用，避免导走用户自己打开的页面；
+    并且全程有「前台守卫」——新建标签若把 Edge 窗口顶到前台，立刻把焦点还回去。
+    """
+    try:
+        if not is_running(key):
+            ok, _ = await ensure_running_async(key, UI_URL)
+            if not ok:
+                return None
+        ws_url = _browser_ws_url(key)
+        if not ws_url:
+            return None
+        target_id = ""
+        with _foreground_guard():
+            async with websockets.connect(ws_url, max_size=16 * 1024 * 1024) as ws:
+                await ws.send(json.dumps({
+                    "id": 1,
+                    "method": "Target.createTarget",
+                    # background=True：新标签不抢占当前可见标签页，用户视角无任何切换
+                    "params": {"url": url, "background": True, "forTab": True},
+                }))
+                deadline = time.time() + timeout_s
+                while time.time() < deadline:
+                    wait_s = max(0.5, deadline - time.time())
+                    try:
+                        reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=wait_s))
+                    except asyncio.TimeoutError:
+                        break
+                    if reply.get("id") != 1:
+                        continue
+                    if reply.get("error"):
+                        return None
+                    target_id = (reply.get("result") or {}).get("targetId") or ""
+                    break
+        if not target_id:
+            return None
+        # 新标签可能稍晚才出现在 /json/list：边等边轮询，避免「建成功却找不到」
+        tab = None
+        for _ in range(int(timeout_s / 0.5) + 1):
+            tab = find_target_by_id(key, target_id)
+            if tab is not None:
+                break
+            await asyncio.sleep(0.5)
+        if tab is None:
+            # 建了却查不到：直接关掉，防止留下没人认领的孤儿标签越积越多
+            close_target(key, target_id)
+            return None
+        await asyncio.sleep(1.0)          # 等页面上下文建立，再打标记
+        await mark_owned(key, target_id)
+        remember_tab(target_id, domain)
+        return find_target_by_id(key, target_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def find_target_by_id(key: str, target_id: str) -> dict | None:
+    """按 id 取标签页信息（含最新 URL）。"""
+    if not target_id:
+        return None
+    for t in list_targets(key):
+        if t.get("id") == target_id:
+            return t
+    return None
+
+
+async def find_owned_tab(key: str, domain: str) -> dict | None:
+    """找一个本项目专属的、匹配 domain 的后台标签页。
+
+    优先级：① 内存已登记的（最快）→ ② 页面内带 bot 标记的（进程重启后仍可认领）。
+    都不存在则返回 None（调用方会新建一个专属标签页，绝不占用用户标签）。
+    """
+    for tid, dom in list(_owned_tabs.items()):
+        if domain and dom and domain not in dom and dom not in domain:
+            continue
+        t = find_target_by_id(key, tid)
+        if t is not None and t.get("type") == "page":
+            return t
+        forget_tab(tid)                    # 标签已关闭，清掉登记
+    for t in list_targets(key):
+        if t.get("type") != "page":
+            continue
+        u = t.get("url") or ""
+        if domain and domain not in u:
+            continue
+        if is_ui_url(u):
+            continue
+        if await raw_evaluate(key, t.get("id", ""), _OWN_PROBE_JS, timeout_s=6) == "bot":
+            remember_tab(t.get("id", ""), domain)
+            return t
+    return None
+
+
+async def ensure_owned_tab(key: str, domain: str, first_url: str, timeout_s: float = 20.0) -> dict | None:
+    """取一个本项目专属的后台标签页：有就复用，没有才新建（全程不切前台）。
+
+    建页偶发失败（Edge 调试端点瞬时繁忙）时重试 2 次；仍失败则退回原生转发，
+    并把新开的标签也登记为专属（避免下次再去动用户自己的页面）。
+    """
+    with _foreground_guard():
+        tab = await find_owned_tab(key, domain)
+        if tab is not None:
+            return tab
+    for attempt in range(3):
+        # 先查再建：建页偶发「成功但列表未刷新」时，重查能直接复用，
+        # 避免反复重试开出好几个同域标签（实测猎聘/智联曾一次开 4 个）。
+        with _foreground_guard():
+            tab = await find_owned_tab(key, domain)
+            if tab is not None:
+                return tab
+            tab = await open_owned_tab(key, domain, first_url, timeout_s=15.0)
+        if tab is not None:
+            return tab
+        if attempt < 2:
+            await asyncio.sleep(1.2)
+    with _foreground_guard():
+        return await _fallback_owned_tab(key, domain, first_url, timeout_s)
+    return None
+
+
+async def _fallback_owned_tab(key: str, domain: str, first_url: str, timeout_s: float) -> dict | None:
+    """[兜底] CDP 建页不可用时的认领流程（调用方需自行加前台守卫）。"""
+    if open_background_tab_sync_fallback(key, first_url):
+        for _ in range(int(timeout_s / 0.8)):
+            await asyncio.sleep(0.8)
+            for t in list_targets(key):
+                if t.get("type") != "page" or domain not in (t.get("url") or ""):
+                    continue
+                # 只认领「刚刚由本项目打开」的标签：用页面标记校验，
+                # 绝不能把用户自己开的同域名页面据为己有（会导走他的页面）。
+                if is_owned(t.get("id", "")):
+                    return t
+                await mark_owned(key, t.get("id", ""))
+                if await raw_evaluate(key, t.get("id", ""), _OWN_PROBE_JS, timeout_s=6) == "bot":
+                    remember_tab(t.get("id", ""), domain)
+                    return t
+    return None
+
+
+async def ensure_apply_tab_background(key: str, domain: str, url: str) -> dict | None:
+    """投递专用：取一个专属后台标签，并确保项目看板仍在用户眼前。
+
+    步骤：① 取/建专属后台标签 → ② 若该标签此刻正被用户看到，先把界面页顶回前台 →
+    ③ 返回标签。这样后续对它的导航与点击都发生在后台，用户视角一直停在看板。
+    """
+    with _foreground_guard():
+        tab = await ensure_owned_tab(key, domain, url)
+        if tab is None:
+            return None
+        ensure_tab_background(key, tab.get("id", ""))
+        return tab
+
+
+def open_background_tab_sync_fallback(key: str, url: str) -> bool:
+    """[兜底] 同步版后台开标签（仅在 CDP 建页不可用时使用）。"""
+    return forward_open(key, url)
+
+
+def focus_ui_tab(key: str) -> bool:
+    """把项目界面标签页切到前台（仅用于「运行中把用户拉回看板」）。
+
+    只在界面页确实存在时执行；找不到界面页返回 False（不做任何焦点操作，
+    避免误把某个平台页顶到前台）。
+    """
+    for t in list_targets(key):
+        if t.get("type") == "page" and is_ui_url(t.get("url") or ""):
+            return activate_target(key, t.get("id", ""))
+    return False
+
+
+def ensure_tab_background(key: str, target_id: str) -> bool:
+    """确保指定标签页处于后台（不被用户看见）：若它当前是活动标签，先把界面页顶到前台。
+
+    这样后续对该标签的导航/点击不会出现在用户眼前——用户视角始终停在项目看板。
+    """
+    if not target_id:
+        return False
+    active = None
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port_for(key)}/json/list", timeout=5
+        ) as r:
+            targets = json.loads(r.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
+    for t in targets or []:
+        if t.get("type") == "page" and not is_ui_url(t.get("url") or ""):
+            active = t
+            break
+    if active is not None and active.get("id") == target_id:
+        # 守卫：切标签会把 Edge 窗口顶到系统前台，操作结束后把焦点还给用户原本的应用
+        with _foreground_guard():
+            return focus_ui_tab(key)
+    return True
 
 
 def is_ui_url(url: str) -> bool:
@@ -414,6 +739,24 @@ async def replace_tab(key: str, target_id: str, reopen_url: str) -> bool:
         pass
     await asyncio.sleep(1.2)
     return forward_open(key, reopen_url)
+
+
+async def replace_tab_background(key: str, domain: str, target_id: str, reopen_url: str) -> dict | None:
+    """重建一个专属后台标签页：关掉僵尸标签 → 后台另开一个（前台页面保持不动）。
+
+    旧实现 replace_tab 走 forward_open（原生转发），会新开一个「可见」标签页，
+    把用户正在看的页面顶掉；这里改为后台重建，用户视角完全无感。
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port_for(key)}/json/close/{target_id}", timeout=5
+        ):
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+    forget_tab(target_id)
+    await asyncio.sleep(1.2)
+    return await open_owned_tab(key, domain, reopen_url)
 
 
 async def raw_evaluate(

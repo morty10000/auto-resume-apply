@@ -51,6 +51,20 @@ from backend.core.job_filter import (
     passes_filters,
 )
 from backend.core.paths import DATA_DIR, RESUMES_DIR
+
+# ---------------------------------------------------------------- 安全闸门
+# 本套件会 drop_all + 重建所有表。若隔离环境变量没有生效（例如被内联执行、
+# 或在已导入 backend 的进程里调用），就会把真实 data/app.db 清空 —— 2026-10-15
+# 真实发生过一次。这里做硬校验：数据目录一旦落在项目真实 data/ 下，立刻中止。
+_REAL_DATA_DIR = (ROOT / "data").resolve()
+if Path(DATA_DIR).resolve() == _REAL_DATA_DIR:
+    raise SystemExit(
+        "[ABORT] 测试隔离失效：AUTO_RESUME_DATA_DIR 未生效，继续运行会清空真实数据库！\n"
+        f"        真实库位置：{_REAL_DATA_DIR / 'app.db'}\n"
+        "        请务必以脚本方式运行：\n"
+        "        runtime\\python.exe -X utf8 scripts\\selfcheck\\regression_suite.py"
+    )
+
 from backend.core.task_locks import apply_lock, collect_lock, match_lock
 from backend.db.database import checkpoint_wal, engine, init_db, session_scope
 from backend.db.models import AppConfig, Application as AppRow
